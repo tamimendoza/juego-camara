@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# MediaPipe model file (downloaded at runtime by run.sh)
+models/
+
+# IDE
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,755 @@
+"""Endless pose-controlled jumping game module.
+
+Pipeline:
+    camera.read_frame → BGR→RGB conversion → mp.Image → PoseLandmarker.detect →
+    landmark extraction → GameEngine.update → GameEngine.render → display with OpenCV
+
+The player jumps by physically raising above a baseline (detected from shoulder
+landmarks). A miniatura stick-figure character at the bottom of the screen
+mirrors the jump and must clear scrolling obstacles. Every 10 obstacles cleared,
+the player levels up. Speed increases by 10% starting from level 2. The game
+ends on collision.
+"""
+
+import random
+import time
+from typing import List, Optional, Sequence
+
+import cv2
+import numpy as np
+
+from .silhouette import SilhouetteDrawer
+from .sound_manager import SoundManager
+from .utils import LandmarkPoint
+
+WINDOW_NAME = "Juego Camara - Mini Juego"
+RESOLUTION = (640, 480)
+
+# --- Geometry constants ---
+GROUND_Y_RATIO = 0.80
+CHARACTER_X = 80
+CHARACTER_TARGET_HEIGHT = 90  # pixel height of the miniatura character
+HEAD_RADIUS_MIN = 8
+
+# --- Jump detection constants ---
+JUMP_THRESHOLD = 30.0  # pixels shoulder midpoint must rise above baseline
+JUMP_COOLDOWN = 8  # frames between allowed jump triggers
+BASELINE_EMA_ALPHA = 0.05  # slow EMA for dynamic baseline adaptation
+
+# --- Physics constants ---
+GRAVITY = 0.6  # px/frame^2
+JUMP_VELOCITY = -14.0  # initial upward velocity (px/frame)
+
+# --- Double jump constants ---
+MAX_JUMPS = 2
+DOUBLE_JUMP_VELOCITY = -10.0
+
+# --- Game speed constants ---
+BASE_SPEED = 4.0  # starting obstacle speed (px/frame)
+SPEED_MULTIPLIER = 1.10  # multiplied every LEVEL_INTERVAL obstacles
+SPEED_INTERVAL = 10  # obstacles passed before speed increases
+LEVEL_INTERVAL = 10  # obstacles passed before level increments
+
+# --- Obstacle constants ---
+OBSTACLE_WIDTH = 30
+OBSTACLE_HEIGHT_RANGE = (50, 120)  # random obstacle heights
+OBSTACLE_GAP_RANGE = (40, 90)  # random frames between spawns
+
+# --- Rendering colors (BGR) ---
+OBSTACLE_COLOR = (0, 100, 255)  # orange-red
+HUD_COLOR = (255, 255, 255)  # white
+
+# --- Landmark indices ---
+NOSE = 0
+LEFT_SHOULDER = 11
+RIGHT_SHOULDER = 12
+LEFT_HIP = 23
+RIGHT_HIP = 24
+
+
+class JumpDetector:
+    """Detects a physical jump from pose landmarks.
+
+    Tracks the vertical position of the shoulder midpoint (landmarks 11 & 12).
+    A dynamic EMA baseline adapts to the player moving closer/farther from the
+    camera. A jump is triggered when the shoulder y drops below
+    ``baseline - JUMP_THRESHOLD`` for one frame, with a cooldown to prevent
+    double-triggers.
+    """
+
+    def __init__(
+        self,
+        threshold: float = JUMP_THRESHOLD,
+        cooldown: int = JUMP_COOLDOWN,
+        ema_alpha: float = BASELINE_EMA_ALPHA,
+    ):
+        self._threshold = threshold
+        self._cooldown = cooldown
+        self._ema_alpha = ema_alpha
+        self._baseline_y: Optional[float] = None
+        self._cooldown_counter = 0
+        self._frame_count = 0
+
+    def update(self, landmarks: Sequence[LandmarkPoint]) -> bool:
+        """Process a frame of landmarks. Returns True if a jump should fire."""
+        if not self._has_shoulders(landmarks):
+            return False
+
+        shoulder_y = self._shoulder_midpoint_y(landmarks)
+
+        # In cooldown: count down, no jump trigger
+        if self._cooldown_counter > 0:
+            self._cooldown_counter -= 1
+            self._frame_count += 1
+            return False
+
+        if self._baseline_y is None:
+            self._baseline_y = shoulder_y
+        else:
+            # Slowly adapt baseline to gradual position changes
+            self._baseline_y = (
+                self._baseline_y * (1 - self._ema_alpha)
+                + shoulder_y * self._ema_alpha
+            )
+
+            if shoulder_y < self._baseline_y - self._threshold:
+                self._cooldown_counter = self._cooldown
+                self._frame_count += 1
+                return True
+
+        self._frame_count += 1
+        return False
+
+    @staticmethod
+    def _has_shoulders(landmarks: Sequence[LandmarkPoint]) -> bool:
+        """Check that both shoulder landmarks are visible."""
+        return (
+            len(landmarks) > RIGHT_SHOULDER
+            and landmarks[LEFT_SHOULDER] is not None
+            and landmarks[RIGHT_SHOULDER] is not None
+        )
+
+    @staticmethod
+    def _shoulder_midpoint_y(landmarks: Sequence[LandmarkPoint]) -> float:
+        """Return the average y of left and right shoulder landmarks."""
+        ls = landmarks[LEFT_SHOULDER]
+        rs = landmarks[RIGHT_SHOULDER]
+        return (ls[1] + rs[1]) / 2.0
+
+    def reset(self) -> None:
+        """Clear the baseline and cooldown on game restart."""
+        self._baseline_y = None
+        self._cooldown_counter = 0
+        self._frame_count = 0
+
+
+class PlayerCharacter:
+    """A small stick-figure character ("miniatura") with jump physics.
+
+    Positioned at a fixed x near the bottom of the screen. Pose landmarks are
+    scaled and translated to render a miniaturized version of the player's
+    pose. Jump physics (velocity + gravity) move the character vertically.
+    """
+
+    def __init__(
+        self,
+        x: int,
+        ground_y: int,
+        scale: float = 0.30,
+        color: tuple = (0, 0, 255),  # red BGR
+    ):
+        self.x = x
+        self.ground_y = ground_y
+        self._scale = scale
+        self._color = color
+
+        self._vy = 0.0
+        self._on_ground = True
+        self._jump_offset = 0.0  # pixels above ground_y
+        self._jump_count = 0
+
+        self._drawer = SilhouetteDrawer()
+        self._drawer.line_color = color
+        self._drawer.joint_color = color
+        self._drawer.silhouette_color = color
+        self._drawer.line_thickness = 1
+        self._drawer.joint_radius = 3
+
+        # Latest transformed pose points for rendering
+        self._render_points: Optional[List[LandmarkPoint]] = None
+        # Bounding box for collision (recomputed in _update_transform)
+        self._bbox: tuple = (0, 0, 0, 0)
+
+    def jump(self) -> bool:
+        """Trigger a jump, supporting double jump while airborne."""
+        if self._jump_count >= MAX_JUMPS:
+            return False
+        if self._jump_count == 0:
+            self._vy = JUMP_VELOCITY
+        else:
+            self._vy += DOUBLE_JUMP_VELOCITY
+        self._jump_count += 1
+        self._on_ground = False
+        return True
+
+    def update(self, landmarks: Optional[Sequence[LandmarkPoint]] = None) -> None:
+        """Apply gravity and update jump position."""
+        if not self._on_ground:
+            self._vy += GRAVITY
+            self._jump_offset += self._vy
+            if self._jump_offset >= 0:
+                self._jump_offset = 0.0
+                self._vy = 0.0
+                self._on_ground = True
+                self._jump_count = 0
+
+        if landmarks is not None:
+            self._update_render_points(landmarks)
+
+    def _update_render_points(
+        self, landmarks: Sequence[LandmarkPoint]
+    ) -> None:
+        """Scale and translate pose landmarks to miniatura position.
+
+        Centers the pose on its shoulder midpoint (or centroid if shoulders
+        are occluded), scales to ``CHARACTER_TARGET_HEIGHT`` pixels tall, and
+        positions the character so its bottom rests on the ground line
+        (offset upward by ``_jump_offset`` when jumping).
+        """
+        points = list(landmarks)
+
+        # Visible points for height / fallback center
+        visible = [p for p in points if p is not None]
+        if len(visible) < 3:
+            self._render_points = None
+            self._bbox = (0, 0, 0, 0)
+            return
+
+        # Center: shoulder midpoint if both visible, else centroid
+        ls = points[LEFT_SHOULDER] if len(points) > LEFT_SHOULDER else None
+        rs = points[RIGHT_SHOULDER] if len(points) > RIGHT_SHOULDER else None
+        if ls is not None and rs is not None:
+            cx = (ls[0] + rs[0]) / 2.0
+            cy = (ls[1] + rs[1]) / 2.0
+        else:
+            cx = sum(p[0] for p in visible) / len(visible)
+            cy = sum(p[1] for p in visible) / len(visible)
+
+        # Full pose height (topmost to bottommost visible landmark)
+        all_y = [p[1] for p in visible]
+        min_y_vis = min(all_y)
+        max_y_vis = max(all_y)
+        pose_height = max_y_vis - min_y_vis
+        if pose_height < 10:
+            pose_height = 10.0
+
+        scale = CHARACTER_TARGET_HEIGHT / pose_height
+
+        # Position so the bottom of the pose (max_y_vis) lands at ground_y
+        # + jump_offset.  When jump_offset=0, the character's feet are at the
+        # ground line.
+        ground_y = self.ground_y + self._jump_offset
+        target_y = ground_y - (max_y_vis - cy) * scale
+        target_x = self.x
+
+        transformed: List[LandmarkPoint] = []
+        min_tx = float("inf")
+        max_tx = float("-inf")
+        min_ty = float("inf")
+        max_ty = float("-inf")
+
+        for p in points:
+            if p is None:
+                transformed.append(None)
+                continue
+            tx = int(target_x + (p[0] - cx) * scale)
+            ty = int(target_y + (p[1] - cy) * scale)
+            transformed.append((tx, ty))
+            min_tx = min(min_tx, tx)
+            max_tx = max(max_tx, tx)
+            min_ty = min(min_ty, ty)
+            max_ty = max(max_ty, ty)
+
+        self._render_points = transformed
+
+        # Bounding box with padding for collision detection
+        pad = 4
+        self._bbox = (
+            min_tx - pad,
+            min_ty - pad,
+            max_tx - min_tx + 2 * pad,
+            max_ty - min_ty + 2 * pad,
+        )
+
+    @property
+    def on_ground(self) -> bool:
+        return self._on_ground
+
+    @property
+    def bounding_box(self) -> tuple:
+        """AABB: (x, y, width, height) for collision detection."""
+        return self._bbox
+
+    def reset(self) -> None:
+        """Reset to ground position."""
+        self._vy = 0.0
+        self._on_ground = True
+        self._jump_offset = 0.0
+        self._jump_count = 0
+        self._render_points = None
+        self._bbox = (0, 0, 0, 0)
+
+    def render(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
+        """Draw the miniatura on the frame as head circle + body lines."""
+        if self._render_points is None:
+            # Fallback: simple static stick figure
+            self._draw_fallback(frame)
+            return
+
+        styles = ["head_circle", "body_lines"]
+        self._drawer.render_character(
+            frame,
+            self._render_points,
+            connections=list(connections) if connections else None,
+            styles=styles,
+        )
+
+    def _draw_fallback(self, frame: np.ndarray) -> None:
+        """Draw a simple static stick figure when no pose is available."""
+        cx = self.x
+        cy = int(self.ground_y + self._jump_offset)
+        r = HEAD_RADIUS_MIN
+        cv2.circle(frame, (cx, cy - r), r, self._color, -1)
+        # Body line
+        cv2.line(frame, (cx, cy), (cx, cy + 30), self._drawer.line_color, 2)
+
+
+class Obstacle:
+    """A rectangular obstacle moving leftward at the current game speed."""
+
+    def __init__(
+        self,
+        x: int,
+        ground_y: int,
+        width: int = OBSTACLE_WIDTH,
+        height: int = OBSTACLE_HEIGHT_RANGE[0],
+        speed: float = BASE_SPEED,
+        color: tuple = OBSTACLE_COLOR,
+    ):
+        self.x = float(x)
+        self.ground_y = ground_y
+        self.width = width
+        self.height = height
+        self.speed = speed
+        self.color = color
+        self.passed = False
+
+    def update(self) -> None:
+        """Move leftward by the current speed."""
+        self.x -= self.speed
+
+    def render(self, frame: np.ndarray) -> None:
+        """Draw the obstacle as a filled rectangle on the ground."""
+        x0 = int(self.x)
+        x1 = int(self.x + self.width)
+        y0 = self.ground_y - self.height
+        y1 = self.ground_y
+        cv2.rectangle(frame, (x0, y0), (x1, y1), self.color, -1)
+        cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 0, 0), 2)
+
+    def off_screen(self) -> bool:
+        """Check if the obstacle has moved completely off the left edge."""
+        return self.x + self.width < 0
+
+    def check_collision(self, bbox: tuple) -> bool:
+        """AABB collision check. bbox = (x, y, w, h)."""
+        return self._aabb_overlap(
+            (self.x, self.ground_y - self.height, self.width, self.height),
+            bbox,
+        )
+
+    @staticmethod
+    def _aabb_overlap(a: tuple, b: tuple) -> bool:
+        """Return True if two AABBs (x, y, w, h) overlap."""
+        ax, ay, aw, ah = a
+        bx, by, bw, bh = b
+        return not (
+            ax + aw < bx
+            or bx + bw < ax
+            or ay + ah < by
+            or by + bh < ay
+        )
+
+    def mark_passed(self, character_x: int) -> bool:
+        """If the obstacle has passed the character, mark it and return True."""
+        if not self.passed and self.x + self.width < character_x:
+            self.passed = True
+            return True
+        return False
+
+
+class ObstacleManager:
+    """Spawns and manages obstacles, tracks score, and controls speed."""
+
+    def __init__(
+        self,
+        width: int,
+        ground_y: int,
+        base_speed: float = BASE_SPEED,
+        spawn_interval_range: tuple = OBSTACLE_GAP_RANGE,
+    ):
+        self.width = width
+        self.ground_y = ground_y
+        self._spawn_interval_range = spawn_interval_range
+        self._speed = base_speed
+        self._obstacles: List[Obstacle] = []
+        self._spawn_timer = 0
+        self._passed_count = 0
+
+    @property
+    def passed_count(self) -> int:
+        return self._passed_count
+
+    @property
+    def level(self) -> int:
+        """Current level: increments every LEVEL_INTERVAL obstacles passed."""
+        return self._passed_count // LEVEL_INTERVAL + 1
+
+    @property
+    def speed(self) -> float:
+        return self._speed
+
+    def set_speed(self, speed: float) -> None:
+        """Update speed for all existing and future obstacles."""
+        self._speed = speed
+        for obs in self._obstacles:
+            obs.speed = speed
+
+    def update(self, character_x: int, character_bbox: tuple) -> None:
+        """Update all obstacles: move, check passing, remove off-screen, spawn."""
+        # Update existing obstacles
+        for obs in self._obstacles:
+            obs.update()
+
+        # Check passing and remove off-screen
+        new_obstacles = []
+        for obs in self._obstacles:
+            if not obs.passed and obs.mark_passed(character_x):
+                self._passed_count += 1
+            if not obs.off_screen():
+                new_obstacles.append(obs)
+        self._obstacles = new_obstacles
+
+        # Spawn new obstacles
+        self._spawn_timer -= 1
+        if self._spawn_timer <= 0:
+            self._spawn()
+            self._spawn_timer = random.randint(*self._spawn_interval_range)
+
+    def _spawn(self) -> None:
+        """Create a new obstacle at the right edge."""
+        height = random.randint(*OBSTACLE_HEIGHT_RANGE)
+        obs = Obstacle(
+            x=self.width,
+            ground_y=self.ground_y,
+            width=OBSTACLE_WIDTH,
+            height=height,
+            speed=self._speed,
+        )
+        self._obstacles.append(obs)
+
+    def check_collisions(self, character_bbox: tuple) -> bool:
+        """Return True if any obstacle collides with the character bbox."""
+        return any(obs.check_collision(character_bbox) for obs in self._obstacles)
+
+    def render(self, frame: np.ndarray) -> None:
+        """Draw all obstacles."""
+        for obs in self._obstacles:
+            obs.render(frame)
+
+    def reset(self) -> None:
+        """Clear all obstacles and reset counters."""
+        self._obstacles = []
+        self._spawn_timer = 0
+        self._passed_count = 0
+
+
+class GameEngine:
+    """Manages game state, scoring, speed progression, and rendering.
+
+    States:
+        MENU (0) → PLAYING (1) → GAME_OVER (2)
+    """
+
+    MENU = 0
+    PLAYING = 1
+    GAME_OVER = 2
+
+    def __init__(self, width: int, height: int, sound_manager: Optional[SoundManager] = None):
+        self.width = width
+        self.height = height
+        self._ground_y = int(height * GROUND_Y_RATIO)
+
+        self._player = PlayerCharacter(CHARACTER_X, self._ground_y)
+        self._obstacle_manager = ObstacleManager(width, self._ground_y)
+        self._jump_detector = JumpDetector()
+        self._sound_manager = sound_manager if sound_manager is not None else SoundManager()
+
+        self._state = self.MENU
+        self._frame_count = 0
+
+    @property
+    def state(self) -> int:
+        return self._state
+
+    @property
+    def state_name(self) -> str:
+        return {self.MENU: "MENU", self.PLAYING: "PLAYING", self.GAME_OVER: "GAME_OVER"}.get(
+            self._state, "UNKNOWN"
+        )
+
+    @property
+    def passed_count(self) -> int:
+        return self._obstacle_manager.passed_count
+
+    @property
+    def level(self) -> int:
+        """Current level: increments every LEVEL_INTERVAL obstacles passed."""
+        return self._obstacle_manager.level
+
+    @property
+    def speed(self) -> float:
+        """Current game speed, scaled by level (increases from level 2)."""
+        multiplier = SPEED_MULTIPLIER ** (self._obstacle_manager.level - 1)
+        return BASE_SPEED * multiplier
+
+    def start(self) -> None:
+        """Transition to PLAYING state."""
+        self.reset()
+        self._state = self.PLAYING
+
+    def reset(self) -> None:
+        """Reset all game state to initial values."""
+        self._player.reset()
+        self._obstacle_manager.reset()
+        self._jump_detector.reset()
+        self._frame_count = 0
+        self._state = self.MENU
+
+    def close(self) -> None:
+        """Clean up resources (sound manager)."""
+        self._sound_manager.close()
+
+    def update(
+        self,
+        landmarks: Optional[Sequence[LandmarkPoint]] = None,
+        connections: Optional[Sequence[tuple]] = None,
+    ) -> None:
+        """Advance the game by one frame."""
+        self._frame_count += 1
+
+        if self._state == self.MENU:
+            return
+
+        if self._state == self.PLAYING:
+            self._update_playing(landmarks, connections)
+        # GAME_OVER: frozen state
+
+    def _update_playing(
+        self,
+        landmarks: Optional[Sequence[LandmarkPoint]],
+        connections: Optional[Sequence[tuple]],
+    ) -> None:
+        # 1. Detect jump from pose
+        if landmarks is not None:
+            if self._jump_detector.update(landmarks):
+                self._player.jump()
+
+        # 2. Update player physics
+        self._player.update(landmarks)
+
+        # 3. Update speed based on score
+        current_speed = self.speed
+        self._obstacle_manager.set_speed(current_speed)
+
+        # 4. Update obstacles
+        old_passed = self._obstacle_manager.passed_count
+        self._obstacle_manager.update(
+            CHARACTER_X, self._player.bounding_box
+        )
+        if self._obstacle_manager.passed_count > old_passed:
+            self._sound_manager.play_coin()
+
+        # 5. Collision check
+        if self._obstacle_manager.check_collisions(self._player.bounding_box):
+            self._sound_manager.play_game_over()
+            self._state = self.GAME_OVER
+
+    def render(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
+        """Render the current game state onto the frame."""
+        if self._state == self.MENU:
+            self._render_menu(frame)
+        elif self._state == self.PLAYING:
+            self._render_game(frame, connections)
+        elif self._state == self.GAME_OVER:
+            self._render_game_over(frame, connections)
+
+    def _render_game(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
+        """Render playing game: solid background + character + obstacles + HUD."""
+        # Solid black background (de-identified, no camera feed)
+        frame[:] = 0
+
+        # Draw ground line
+        cv2.line(
+            frame,
+            (0, self._ground_y),
+            (self.width, self._ground_y),
+            (100, 100, 100),
+            2,
+        )
+
+        # Render character
+        self._player.render(frame, connections)
+
+        # Render obstacles
+        self._obstacle_manager.render(frame)
+
+        # HUD
+        self._draw_hud(frame)
+
+    def _render_menu(self, frame: np.ndarray) -> None:
+        """Render the menu screen."""
+        frame[:] = 0
+        cv2.putText(
+            frame,
+            "POSE JUMP GAME",
+            (self.width // 2 - 120, self.height // 2 - 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            HUD_COLOR,
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            "Jump to start",
+            (self.width // 2 - 80, self.height // 2 + 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (180, 180, 180),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            "Press SPACE to start",
+            (self.width // 2 - 100, self.height // 2 + 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (180, 180, 180),
+            1,
+            cv2.LINE_AA,
+        )
+
+    def _render_game_over(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
+        """Render game over screen (frozen game frame + overlay)."""
+        self._render_game(frame, connections)
+        # Dim the game slightly
+        frame[:] = (frame * 0.4).astype(frame.dtype)
+
+        speed_mult = SPEED_MULTIPLIER ** (self.level - 1)
+
+        cv2.putText(
+            frame,
+            "GAME OVER",
+            (self.width // 2 - 80, self.height // 2 - 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            f"Score: {self.passed_count}",
+            (self.width // 2 - 40, self.height // 2 + 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            HUD_COLOR,
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            f"Level: {self.level}",
+            (self.width // 2 - 40, self.height // 2 + 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (180, 180, 180),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            f"Speed: {speed_mult:.1f}x",
+            (self.width // 2 - 40, self.height // 2 + 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (180, 180, 180),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            "Press SPACE to restart",
+            (self.width // 2 - 90, self.height // 2 + 100),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (180, 180, 180),
+            1,
+            cv2.LINE_AA,
+        )
+
+    def _draw_hud(self, frame: np.ndarray) -> None:
+        """Draw level, score, and speed multiplier on the frame."""
+        speed_mult = SPEED_MULTIPLIER ** (self.level - 1)
+        cv2.putText(
+            frame,
+            f"Level: {self.level}",
+            (10, 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            HUD_COLOR,
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            f"Obstacles: {self.passed_count}",
+            (10, 48),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (180, 180, 180),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            f"Speed: {speed_mult:.1f}x",
+            (10, 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (180, 180, 180),
+            1,
+            cv2.LINE_AA,
+        )
+
+    def handle_key(self, key: int) -> None:
+        """Handle keyboard input for game control."""
+        if key == ord(" "):  # SPACE
+            if self._state == self.MENU:
+                self.start()
+            elif self._state == self.GAME_OVER:
+                self.start()
+        elif key == ord("q") or key == 27:  # q or ESC
+            pass  # handled by caller for exit
