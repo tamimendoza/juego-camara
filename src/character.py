@@ -126,10 +126,14 @@ class MimicCharacter:
 
         smoothed = smooth_landmarks(self._prev_points, raw_points, alpha=self._smoother_alpha)
 
+        # Keep the smoother state in the raw (non-mirrored) coordinate frame.
+        # Mirroring after smoothing prevents the EMA from blending mirrored
+        # previous points with raw current points, which would pull the
+        # character back toward the unmirrored position over a few frames.
+        self._prev_points = smoothed
+
         if self.mirror_mode:
             smoothed = mirror_points(smoothed, self.width)
-
-        self._prev_points = smoothed
         self._points = smoothed
         self._connections = connections
         self._pose_success = True

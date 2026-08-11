@@ -17,6 +17,7 @@ Audio:
     Background music volume is kept below sound effect volume.
 """
 
+import math
 import random
 import time
 from typing import List, Optional, Sequence
@@ -24,6 +25,7 @@ from typing import List, Optional, Sequence
 import cv2
 import numpy as np
 
+from .character import mirror_points
 from .silhouette import SilhouetteDrawer
 from .sound_manager import SoundManager
 from .utils import LandmarkPoint
@@ -36,11 +38,20 @@ GROUND_Y_RATIO = 0.80
 CHARACTER_X = 80
 CHARACTER_TARGET_HEIGHT = 90  # pixel height of the miniatura character
 HEAD_RADIUS_MIN = 8
+TOP_MARGIN = 60.0  # px the character top may not rise above the screen top
+MAX_JUMP_OFFSET = max(  # highest jump offset that keeps the character on screen
+    GROUND_Y_RATIO * RESOLUTION[1] - CHARACTER_TARGET_HEIGHT - TOP_MARGIN,
+    1.0,
+)
 
 # --- Jump detection constants ---
 JUMP_THRESHOLD = 30.0  # pixels shoulder midpoint must rise above baseline
 JUMP_COOLDOWN = 8  # frames between allowed jump triggers
 BASELINE_EMA_ALPHA = 0.05  # slow EMA for dynamic baseline adaptation
+CROUCH_ANGLE_THRESHOLD = 150.0  # avg knee angle (deg) below which legs are bent
+CROUCH_HOLD_FRAMES = 4  # consecutive crouch frames required to arm the jump
+ARMED_TIMEOUT_FRAMES = 20  # frames to jump after arming before the arm expires
+ANKLE_RISE_THRESHOLD = 10.0  # px ankles must rise to confirm a real jump
 
 # --- Physics constants ---
 GRAVITY = 0.6  # px/frame^2
@@ -103,16 +114,27 @@ LEFT_SHOULDER = 11
 RIGHT_SHOULDER = 12
 LEFT_HIP = 23
 RIGHT_HIP = 24
+LEFT_KNEE = 25
+RIGHT_KNEE = 26
+LEFT_ANKLE = 27
+RIGHT_ANKLE = 28
 
 
 class JumpDetector:
-    """Detects a physical jump from pose landmarks.
+    """Detects a physical jump from pose landmarks using a two-phase gesture.
 
-    Tracks the vertical position of the shoulder midpoint (landmarks 11 & 12).
-    A dynamic EMA baseline adapts to the player moving closer/farther from the
-    camera. A jump is triggered when the shoulder y drops below
-    ``baseline - JUMP_THRESHOLD`` for one frame, with a cooldown to prevent
-    double-triggers.
+    A jump only fires when the player first bends their legs (crouches — the
+    average knee angle drops below ``CROUCH_ANGLE_THRESHOLD`` for
+    ``CROUCH_HOLD_FRAMES`` frames, arming the detector) and then performs an
+    actual jump — the whole body (shoulders AND ankles) rises above the crouch
+    baseline. Raising the shoulders alone never triggers a jump, and crouching
+    without a takeoff never fires (the arm expires after
+    ``ARMED_TIMEOUT_FRAMES``).
+
+    States:
+      IDLE       — EMA shoulder baseline adapts; arms when the legs stay bent.
+      ARMED      — legs are bent; fires when shoulders AND ankles rise.
+      cooldown   — blocks further triggers for a few frames after a jump fires.
     """
 
     def __init__(
@@ -128,9 +150,18 @@ class JumpDetector:
         self._cooldown_counter = 0
         self._frame_count = 0
 
+        # Two-phase (crouch → jump) state
+        self._crouch_frames = 0
+        self._armed = False
+        self._armed_frames = 0
+        self._crouch_baseline: Optional[float] = None
+        self._ankle_baseline: Optional[float] = None
+
     def update(self, landmarks: Sequence[LandmarkPoint]) -> bool:
         """Process a frame of landmarks. Returns True if a jump should fire."""
         if not self._has_shoulders(landmarks):
+            self._frame_count += 1
+            self._crouch_frames = 0
             return False
 
         shoulder_y = self._shoulder_midpoint_y(landmarks)
@@ -139,24 +170,61 @@ class JumpDetector:
         if self._cooldown_counter > 0:
             self._cooldown_counter -= 1
             self._frame_count += 1
+            self._crouch_frames = 0
             return False
 
-        if self._baseline_y is None:
-            self._baseline_y = shoulder_y
+        if self._armed:
+            self._armed_frames += 1
+            if self._armed_frames > ARMED_TIMEOUT_FRAMES:
+                self._disarm()
+            else:
+                ankle_y = self._ankle_midpoint_y(landmarks)
+                if (
+                    ankle_y is not None
+                    and self._crouch_baseline is not None
+                    and self._ankle_baseline is not None
+                    and shoulder_y < self._crouch_baseline - self._threshold
+                    and ankle_y < self._ankle_baseline - ANKLE_RISE_THRESHOLD
+                ):
+                    self._disarm()
+                    self._cooldown_counter = self._cooldown
+                    self._frame_count += 1
+                    return True
         else:
-            # Slowly adapt baseline to gradual position changes
-            self._baseline_y = (
-                self._baseline_y * (1 - self._ema_alpha)
-                + shoulder_y * self._ema_alpha
-            )
+            # IDLE: slowly adapt baseline to gradual position changes
+            if self._baseline_y is None:
+                self._baseline_y = shoulder_y
+            else:
+                self._baseline_y = (
+                    self._baseline_y * (1 - self._ema_alpha)
+                    + shoulder_y * self._ema_alpha
+                )
 
-            if shoulder_y < self._baseline_y - self._threshold:
-                self._cooldown_counter = self._cooldown
-                self._frame_count += 1
-                return True
+            # Arm the jump when the legs stay bent
+            if self._is_crouched(landmarks):
+                self._crouch_frames += 1
+                if self._crouch_frames >= CROUCH_HOLD_FRAMES:
+                    self._crouch_baseline = shoulder_y
+                    ankle_baseline = self._ankle_midpoint_y(landmarks)
+                    self._ankle_baseline = (
+                        ankle_baseline if ankle_baseline is not None else shoulder_y
+                    )
+                    self._armed = True
+                    self._armed_frames = 0
+                    self._crouch_frames = 0
+            else:
+                self._crouch_frames = 0
 
         self._frame_count += 1
         return False
+
+    def _disarm(self) -> None:
+        """Clear the armed state back to IDLE."""
+        self._armed = False
+        self._armed_frames = 0
+        self._crouch_frames = 0
+        self._crouch_baseline = None
+        self._ankle_baseline = None
 
     @staticmethod
     def _has_shoulders(landmarks: Sequence[LandmarkPoint]) -> bool:
@@ -174,11 +242,60 @@ class JumpDetector:
         rs = landmarks[RIGHT_SHOULDER]
         return (ls[1] + rs[1]) / 2.0
 
+    @staticmethod
+    def _ankle_midpoint_y(landmarks: Sequence[LandmarkPoint]) -> Optional[float]:
+        """Return the average y of left and right ankle landmarks, or None."""
+        if len(landmarks) <= RIGHT_ANKLE:
+            return None
+        la = landmarks[LEFT_ANKLE]
+        ra = landmarks[RIGHT_ANKLE]
+        if la is None or ra is None:
+            return None
+        return (la[1] + ra[1]) / 2.0
+
+    @staticmethod
+    def _knee_angle(
+        hip: LandmarkPoint,
+        knee: LandmarkPoint,
+        ankle: LandmarkPoint,
+    ) -> Optional[float]:
+        """Return the angle (degrees) at the knee joint, or None if degenerate."""
+        if hip is None or knee is None or ankle is None:
+            return None
+        v1 = (hip[0] - knee[0], hip[1] - knee[1])
+        v2 = (ankle[0] - knee[0], ankle[1] - knee[1])
+        n1 = math.hypot(v1[0], v1[1])
+        n2 = math.hypot(v2[0], v2[1])
+        if n1 < 1e-6 or n2 < 1e-6:
+            return None
+        cos = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)))
+        return math.degrees(math.acos(cos))
+
+    @classmethod
+    def _is_crouched(cls, landmarks: Sequence[LandmarkPoint]) -> bool:
+        """True when both knees are bent below CROUCH_ANGLE_THRESHOLD."""
+        if len(landmarks) <= RIGHT_ANKLE:
+            return False
+        left = cls._knee_angle(
+            landmarks[LEFT_HIP],
+            landmarks[LEFT_KNEE],
+            landmarks[LEFT_ANKLE],
+        )
+        right = cls._knee_angle(
+            landmarks[RIGHT_HIP],
+            landmarks[RIGHT_KNEE],
+            landmarks[RIGHT_ANKLE],
+        )
+        if left is None or right is None:
+            return False
+        return (left + right) / 2.0 < CROUCH_ANGLE_THRESHOLD
+
     def reset(self) -> None:
-        """Clear the baseline and cooldown on game restart."""
+        """Clear the baseline, cooldown, and two-phase state on game restart."""
         self._baseline_y = None
         self._cooldown_counter = 0
         self._frame_count = 0
+        self._disarm()
 
 
 class PlayerCharacter:
@@ -242,6 +359,9 @@ class PlayerCharacter:
         if not self._on_ground:
             self._vy += GRAVITY
             self._jump_offset += self._vy
+            # Clamp the apex so the character never leaves the screen
+            if self._jump_offset > MAX_JUMP_OFFSET:
+                self._jump_offset = MAX_JUMP_OFFSET
             if self._jump_offset >= 0:
                 self._jump_offset = 0.0
                 self._vy = 0.0
@@ -367,7 +487,7 @@ class PlayerCharacter:
             self._draw_fallback(frame)
             return
 
-        styles = ["head_circle", "body_lines"]
+        styles = ["head_circle", "body_lines", "torso_fill"]
         self._drawer.render_character(
             frame,
             self._render_points,
@@ -470,6 +590,7 @@ class SkyBlock:
         size: int = SKY_BLOCK_SIZE,
         color: tuple = SKY_BLOCK_COLOR,
         speed: float = BASE_SPEED,
+        sprite: Optional[np.ndarray] = None,
     ):
         self.x = float(x)
         self.y = y
@@ -477,19 +598,40 @@ class SkyBlock:
         self.color = color
         self.speed = speed * CLOUD_SPEED_FACTOR
         self.collected = False
+        self.sprite = sprite
 
     def update(self) -> None:
         """Move leftward at cloud speed."""
         self.x -= self.speed
 
     def render(self, frame: np.ndarray) -> None:
-        """Draw the sky block as a filled square."""
+        """Draw the sky block using its sprite, or as a filled square."""
+        if self.sprite is not None:
+            sprite = cv2.resize(self.sprite, (self.size, self.size))
+            self._blend_sprite(frame, sprite)
+            return
         x0 = int(self.x)
         y0 = int(self.y)
         x1 = int(self.x + self.size)
         y1 = int(self.y + self.size)
         cv2.rectangle(frame, (x0, y0), (x1, y1), self.color, -1)
         cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 0, 0), 2)
+
+    def _blend_sprite(self, frame: np.ndarray, sprite: np.ndarray) -> None:
+        """Alpha-blend a BGRA sprite over the frame at the block's position."""
+        x0 = max(int(self.x), 0)
+        y0 = max(int(self.y), 0)
+        x1 = min(int(self.x) + self.size, frame.shape[1])
+        y1 = min(int(self.y) + self.size, frame.shape[0])
+        if x0 >= x1 or y0 >= y1:
+            return
+        sx = x0 - int(self.x)
+        sy = y0 - int(self.y)
+        spr = sprite[sy:sy + (y1 - y0), sx:sx + (x1 - x0)]
+        bgr = spr[:, :, :3].astype(np.float32)
+        alpha = (spr[:, :, 3].astype(np.float32) / 255.0)[..., np.newaxis]
+        region = frame[y0:y1, x0:x1].astype(np.float32)
+        frame[y0:y1, x0:x1] = (bgr * alpha + region * (1 - alpha)).astype(np.uint8)
 
     def off_screen(self) -> bool:
         """Check if the sky block has moved completely off the left edge."""
@@ -526,6 +668,7 @@ class Cloud:
         height: int,
         color: tuple = CLOUD_COLOR,
         speed: float = BASE_SPEED,
+        sprite: Optional[np.ndarray] = None,
     ):
         self.x = float(x)
         self.y = y
@@ -533,13 +676,18 @@ class Cloud:
         self.height = height
         self.color = color
         self.speed = speed * CLOUD_SPEED_FACTOR
+        self.sprite = sprite
 
     def update(self) -> None:
         """Move leftward at cloud speed."""
         self.x -= self.speed
 
     def render(self, frame: np.ndarray) -> None:
-        """Draw the cloud as an ellipse."""
+        """Draw the cloud using its sprite, or as an ellipse when no sprite."""
+        if self.sprite is not None:
+            sprite = cv2.resize(self.sprite, (self.width, self.height))
+            self._blend_sprite(frame, sprite)
+            return
         cx = int(self.x + self.width / 2)
         cy = int(self.y + self.height / 2)
         cv2.ellipse(
@@ -552,6 +700,22 @@ class Cloud:
             self.color,
             -1,
         )
+
+    def _blend_sprite(self, frame: np.ndarray, sprite: np.ndarray) -> None:
+        """Alpha-blend a BGRA sprite over the frame at the cloud's position."""
+        x0 = max(int(self.x), 0)
+        y0 = max(int(self.y), 0)
+        x1 = min(int(self.x) + self.width, frame.shape[1])
+        y1 = min(int(self.y) + self.height, frame.shape[0])
+        if x0 >= x1 or y0 >= y1:
+            return
+        sx = x0 - int(self.x)
+        sy = y0 - int(self.y)
+        spr = sprite[sy:sy + (y1 - y0), sx:sx + (x1 - x0)]
+        bgr = spr[:, :, :3].astype(np.float32)
+        alpha = (spr[:, :, 3].astype(np.float32) / 255.0)[..., np.newaxis]
+        region = frame[y0:y1, x0:x1].astype(np.float32)
+        frame[y0:y1, x0:x1] = (bgr * alpha + region * (1 - alpha)).astype(np.uint8)
 
     def off_screen(self) -> bool:
         """Check if the cloud has moved completely off the left edge."""
@@ -768,6 +932,12 @@ class GameEngine:
         landmarks: Optional[Sequence[LandmarkPoint]],
         connections: Optional[Sequence[tuple]],
     ) -> None:
+        # Mirror the pose so the miniatura character behaves like the player's
+        # mirror image: pointing forward along the character's path stays
+        # forward, instead of being rendered in reverse.
+        if landmarks is not None:
+            landmarks = mirror_points(landmarks, self.width)
+
         # 1. Update player physics (includes pose stability check)
         self._player.update(landmarks)
 

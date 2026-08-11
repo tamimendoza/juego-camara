@@ -727,6 +727,31 @@ class TestMinecraftGameEngine:
 
         assert engine.state == MinecraftGameEngine.GAME_OVER
 
+    def test_character_arms_point_forward_like_player_mirror(self):
+        """The miniatura character mirrors the player so arms point forward.
+
+        When the player points both hands forward (toward their physical right,
+        which is the image-LEFT on a non-flipped camera), the character's arms
+        must point FORWARD (image-right, along the character's path) — not be
+        rendered in reverse.
+        """
+        engine = self._make_engine()
+        engine.start()
+
+        landmarks = make_standing_landmarks()
+        landmarks[11] = (440, 300)
+        landmarks[12] = (200, 300)
+        landmarks[13] = (400, 320)
+        landmarks[15] = (360, 350)
+        landmarks[14] = (170, 320)
+        landmarks[16] = (100, 350)
+
+        engine.update(landmarks, MOCK_CONNECTIONS)
+        rp = engine._player._render_points
+        assert rp is not None
+        assert rp[15][0] > rp[11][0], "left arm should point forward (image-right)"
+        assert rp[16][0] > rp[12][0], "right arm should point forward (image-right)"
+
     def test_menu_update_does_nothing(self):
         """In MENU state, update() does not spawn obstacles."""
         engine = self._make_engine()

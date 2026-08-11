@@ -37,7 +37,9 @@ Questions.
   sounds, backgrounds) in any game variant.
 - No changes to non-mirror rendering in the silhouette app (`src/main.py`
   `CharacterManager` outside of mirror mode).
-- No changes to the Minecraft or base Mario game variants.
+- No changes to the Minecraft or base Mario game **mechanics** (the pose mirror
+  added in Decision 4 only affects the miniatura character's arm direction, not
+  jump physics, collision, or scoring).
 - The `src/face_detector.py` file (FaceMesh wrapper) is left in place during this
   change as a fallback; removing it is deferred to avoid breaking the
   `mario-face-capture` tests if the Tasks API model is unavailable.
@@ -104,6 +106,28 @@ that can be used to center the crop and determine face size without iterating
 over 200 contour landmarks. This is the "more efficient face cropping" the user
 described. The optional parameter keeps backward compatibility with existing
 callers and tests.
+
+### Decision 4: Mirror the pose in the game engines
+
+**Choice:** Each game engine (`GameEngine`, `MarioGameEngine`,
+`MinecraftGameEngine` — the latter two include the face variant via
+inheritance) mirrors the pose landmarks with `mirror_points()` at the top of
+`_update_playing()` before rendering the miniatura character.
+
+**Rationale:** The camera feed is not horizontally flipped, so a player facing
+the camera has their right side on the image-left. Rendering the raw pose makes
+the miniatura character's arms point in the *opposite* direction of the
+character's travel: when the player points their hands forward (toward their
+physical right), the character points backward. Mirroring the pose (swap
+left/right landmark pairs + X-flip) makes the character behave like the player's
+mirror image, so pointing forward along the character's path renders forward.
+Jump detection is unaffected because it only reads shoulder **y** positions.
+
+**Alternatives considered:**
+- *Keep raw pose in the games*: character arms point opposite the path —
+  the reported bug.
+- *Flip only the render, not the detection*: jump detection is Y-based so it
+  makes no difference; mirroring once in `_update_playing` is simplest.
 
 ## Risks / Trade-offs
 

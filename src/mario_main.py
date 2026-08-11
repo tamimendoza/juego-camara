@@ -69,7 +69,7 @@ def main() -> int:
     print("Physically jump to make Mario jump and clear obstacles!")
     print("Controls: SPACE = start/restart | q = quit")
 
-    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
 
     # Canvas for game rendering (no camera feed in game mode)
     display = np.zeros((height, width, 3), dtype=np.uint8)

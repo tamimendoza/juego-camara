@@ -90,7 +90,14 @@ The system SHALL render a character whose pose mirrors the detected user's pose 
 #### Scenario: Mirror mode
 
 - **WHEN** the user presses the `m` key
-- **THEN** the system toggles mirror mode (character moves symmetrically with the user as if reflected)
+- **THEN** the system toggles mirror mode, reflecting the character horizontally
+  by X-flipping all landmark coordinates AND swapping each pair of symmetric
+  left/right body landmark indices (shoulder, elbow, wrist, hip, knee, ankle,
+  heel, and foot-index pairs)
+- **AND** an arm pointing backward relative to the body centerline in real life
+  remains pointing backward in the mirrored character (direction preserved)
+- **AND** head/face landmarks (indices 0–10, which are mostly midline or
+  asymmetric) are X-flipped only without index swapping
 
 #### Scenario: Real-time frame rate
 

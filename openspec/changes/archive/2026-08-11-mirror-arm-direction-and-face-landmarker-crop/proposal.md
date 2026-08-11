@@ -36,6 +36,10 @@ Two issues affect the pose camera application:
   bounding box is unavailable.
 - **Modify `src/mario_face_game.py`** — Wire the new `FaceLandmarkerDetector` into
   the pipeline alongside the existing PoseLandmarker.
+- **Modify `src/game.py`, `src/mario_game.py`, `src/minecraft_game.py`** — Mirror
+  the pose in each game engine's `_update_playing` so the miniatura character
+  points its arms forward along the character's path (as the player's mirror
+  image) instead of in reverse.
 - **Add tests** for the corrected mirror swap logic and the new face landmarker
   detector / bounding-box crop path.
 
@@ -67,6 +71,9 @@ Two issues affect the pose camera application:
   bounding-box parameter for tighter crop computation.
 - **Modified**: `src/mario_face_game.py` — uses `FaceLandmarkerDetector` instead of
   `FaceDetector`.
+- **Modified**: `src/game.py`, `src/mario_game.py`, `src/minecraft_game.py` —
+  game engines mirror the pose so the character's arms point forward along the
+  character's path.
 - **Modified**: `src/main.py`, `run.sh` — download `face_landmarker.task` at first
   run alongside the pose model.
 - **Modified**: `tests/test_character.py` — updated mirror tests, new swap-logic

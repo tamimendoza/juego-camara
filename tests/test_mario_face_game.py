@@ -15,6 +15,8 @@ from src.mario_face_game import (
     MarioFaceGameEngine,
     RESOLUTION,
     WINDOW_NAME,
+    SPEED_INCREMENT,
+    GRAFFITI_BRICK_Y_OFFSET,
 )
 from src.mario_game import (
     BASE_SPEED,
@@ -751,15 +753,15 @@ class TestMarioFaceGameEngine:
         assert engine.lives == 0
         assert engine.state == MarioGameEngine.GAME_OVER
 
-    def test_background_is_sky_blue(self):
-        """Rendered playing background is sky blue."""
+    def test_background_is_sky_color(self):
+        """Rendered playing background is light sky-blue (celeste)."""
         engine = self._make_engine()
         engine.handle_key(ord(" "))
         frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
         engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
         engine.render(frame, MOCK_CONNECTIONS)
 
-        assert tuple(frame[0, 0]) == (200, 230, 255)
+        assert tuple(frame[0, 0]) == SKY_COLOR
 
     def test_hud_shows_score_level_speed(self):
         """After update in PLAYING, the HUD region is visible."""
@@ -821,7 +823,7 @@ class TestMarioFaceGameEngine:
         assert engine.level == 3
 
     def test_speed_progression(self):
-        """Speed increases by SPEED_MULTIPLIER^(level-1)."""
+        """Speed uses the additive multiplier BASE_SPEED * (1 + 0.1*(level-1))."""
         engine = self._make_engine()
         engine.handle_key(ord(" "))
 
@@ -829,13 +831,72 @@ class TestMarioFaceGameEngine:
         assert engine.speed == pytest.approx(BASE_SPEED)
 
         engine._obstacle_manager._passed_count = 5
-        assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER)
+        assert engine.speed == pytest.approx(BASE_SPEED * (1 + SPEED_INCREMENT))
+
+        engine._obstacle_manager._passed_count = 10
+        assert engine.speed == pytest.approx(BASE_SPEED * (1 + 2 * SPEED_INCREMENT))
 
     def test_spawn_gap_at_level_1_is_wide(self):
         """Level 1 spawn gap range is wide (180-280 frames)."""
         engine = self._make_engine()
         gap = engine._obstacle_manager.spawn_gap_range
         assert gap == (180, 280)
+
+    def test_sky_block_spawns_one_per_level_up(self):
+        """Reaching level 2 (5 obstacles) spawns exactly one sky block."""
+        engine = self._make_engine()
+        engine.handle_key(ord(" "))
+
+        assert len(engine._sky_blocks) == 0
+
+        engine._obstacle_manager._passed_count = 5
+        engine._update_sky_blocks(engine.speed)
+        assert engine.level == 2
+        assert len(engine._sky_blocks) == 1
+
+        # No further spawn without a new level milestone
+        engine._update_sky_blocks(engine.speed)
+        assert len(engine._sky_blocks) == 1
+
+    def test_collecting_sky_block_grants_coin_not_life(self):
+        """Collecting a sky block adds +1 coin and never a life."""
+        engine = self._make_engine()
+        engine.handle_key(ord(" "))
+        engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
+
+        engine._obstacle_manager._passed_count = 5
+        engine._update_sky_blocks(engine.speed)
+        assert len(engine._sky_blocks) == 1
+
+        block = engine._sky_blocks[0]
+        bbox = engine._player.bounding_box
+        block.x, block.y = bbox[0], bbox[1]
+        block.size = max(block.size, bbox[2] + 1, bbox[3] + 1)
+
+        lives_before = engine.lives
+        coins_before = engine.coins
+        engine._update_sky_blocks(engine.speed)
+
+        assert engine.coins == coins_before + 1
+        assert engine.lives == lives_before
+        assert block.collected is True
+
+    def test_cloud_render_uses_sprite(self):
+        """Cloud.render with a sprite differs from the ellipse; no sprite keeps it."""
+        sprite = np.zeros((10, 10, 4), dtype=np.uint8)
+        sprite[2:8, 2:8, :3] = 255
+        sprite[2:8, 2:8, 3] = 255
+
+        with_sprite = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        without = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        reference = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+
+        Cloud(x=100, y=100, width=80, height=60, sprite=sprite).render(with_sprite)
+        Cloud(x=100, y=100, width=80, height=60).render(without)
+        cv2.ellipse(reference, (140, 130), (40, 30), 0, 0, 360, CLOUD_COLOR, -1)
+
+        assert not np.array_equal(with_sprite, without)
+        assert np.array_equal(without, reference)
 
     def test_double_jump_detected_during_play(self):
         """A second jump gesture while airborne triggers a double jump."""
@@ -889,6 +950,82 @@ class TestMarioFaceGameEngine:
 
         # Frame should have content (face overlay + body + HUD)
         assert frame.sum() > 0
+
+    def test_graffiti_drawn_on_bricks_with_graffiti_y(self):
+        """_render_static_environment(graffiti_y) draws graffiti below ground_y."""
+        engine = self._make_engine()
+        frame = np.full((HEIGHT, WIDTH, 3), SKY_COLOR, dtype=np.uint8)
+        engine._render_static_environment(
+            frame, draw_clouds=False,
+            graffiti_y=GROUND_Y + GRAFFITI_BRICK_Y_OFFSET,
+        )
+
+        region = frame[GROUND_Y + 1:GROUND_Y + 30, WIDTH // 2 - 110:WIDTH // 2 + 110]
+        bright = (region >= 250).all(axis=2)
+        assert bright.sum() > 0
+
+    def test_graffiti_default_position_above_ground(self):
+        """Default _render_static_environment keeps graffiti above the ground."""
+        engine = self._make_engine()
+        frame = np.full((HEIGHT, WIDTH, 3), SKY_COLOR, dtype=np.uint8)
+        engine._render_static_environment(frame, draw_clouds=False)
+
+        region = frame[GROUND_Y:HEIGHT, WIDTH // 2 - 110:WIDTH // 2 + 110]
+        bright = (region >= 250).all(axis=2)
+        assert bright.sum() == 0
+
+    def test_spawned_clouds_are_wider_than_tall(self):
+        """Spawned clouds keep a wide cloud-like proportion (height < width)."""
+        engine = self._make_engine()
+        engine.handle_key(ord(" "))
+        engine._spawn_cloud(engine.speed)
+        engine._spawn_cloud(engine.speed)
+
+        assert len(engine._clouds) >= 1
+        for cloud in engine._clouds:
+            assert cloud.height < cloud.width
+            assert cloud.height == max(cloud.width // 4, 8)
+
+    def test_seeded_clouds_are_wider_than_tall(self):
+        """Clouds seeded on reset keep a wide proportion."""
+        engine = self._make_engine()
+        engine.handle_key(ord(" "))
+
+        assert len(engine._clouds) > 0
+        for cloud in engine._clouds:
+            assert cloud.height < cloud.width
+
+    def test_face_preview_drawn_with_face(self):
+        """Playing render with a face draws the preview in the lower-right corner."""
+        engine = self._make_engine()
+        engine.handle_key(ord(" "))
+
+        face_img = np.full((50, 50, 3), (0, 0, 255), dtype=np.uint8)
+        mask = np.zeros((50, 50), dtype=np.uint8)
+        cv2.circle(mask, (25, 25), 25, 255, -1)
+        engine._face_image = face_img
+        engine._face_mask = mask
+
+        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
+        engine.render(frame, MOCK_CONNECTIONS)
+
+        # Preview blends the red face into the brick band at the lower-right
+        px = frame[GROUND_Y + 30, WIDTH - 35]
+        assert px[2] > 100 and px[2] > px[1]
+
+    def test_face_preview_outline_when_no_face(self):
+        """Playing render without a face draws only the preview circle outline."""
+        engine = self._make_engine()
+        engine.handle_key(ord(" "))
+
+        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
+        engine.render(frame, MOCK_CONNECTIONS)
+
+        region = frame[GROUND_Y + 5:GROUND_Y + 60, WIDTH - 60:WIDTH - 5]
+        bright = region.sum(axis=2) > 600
+        assert bright.sum() > 0
 
 
 if __name__ == "__main__":

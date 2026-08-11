@@ -374,3 +374,51 @@ class TestMirrorPoints:
         ]:
             assert _MIRROR_LANDMARK_MAP[left] == right
             assert _MIRROR_LANDMARK_MAP[right] == left
+
+
+class TestMimicCharacterMirrorStability:
+    """Mirror mode must stay mirrored across frames.
+
+    The EMA smoother in ``MimicCharacter.update`` must keep its state in the
+    raw (non-mirrored) coordinate frame. If the mirrored points are stored back
+    as the previous frame, the smoother blends mirrored and raw coordinates and
+    the mirror decays back to the unmirrored pose within a few frames — the
+    reported bug where arms keep following normally in mirror mode.
+    """
+
+    def test_mirror_does_not_decay_after_many_frames(self):
+        """The mirrored pose stays mirrored over many frames of a static pose."""
+        width = 640
+        # Asymmetric static pose so a decay toward raw is clearly visible.
+        points = [None] * 33
+        points[11] = (250, 300)  # left shoulder
+        points[12] = (480, 300)  # right shoulder
+        points[15] = (200, 350)  # left wrist
+        points[16] = (530, 350)  # right wrist
+
+        expected = [
+            640 - 480,  # 11 <- mirror of right shoulder
+            640 - 250,  # 12 <- mirror of left shoulder
+            640 - 530,  # 15 <- mirror of right wrist
+            640 - 200,  # 16 <- mirror of left wrist
+        ]
+
+        class FakeResult:
+            success = True
+            segmentation_mask = None
+
+            def landmark_points(self, w, h, visibility_threshold=0.5):
+                return list(points)
+
+        char = MimicCharacter(width, 480, smooth_alpha=0.3)
+        char.mirror_mode = True
+        result = FakeResult()
+
+        for _ in range(30):
+            char.update(result)
+
+        p = char._points
+        assert p[11] == (expected[0], 300)
+        assert p[12] == (expected[1], 300)
+        assert p[15] == (expected[2], 350)
+        assert p[16] == (expected[3], 350)

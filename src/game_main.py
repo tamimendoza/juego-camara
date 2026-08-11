@@ -68,6 +68,7 @@ def main() -> int:
     print("Controls: SPACE = start/restart | q = quit")
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WINDOW_NAME, 1920, 1080)
 
     # Blank canvas for game rendering (no camera feed in game mode)
     display = np.zeros((height, width, 3), dtype=np.uint8)

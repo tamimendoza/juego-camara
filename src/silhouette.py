@@ -213,6 +213,23 @@ class SilhouetteDrawer:
                 if p1 is not None and p2 is not None:
                     cv2.line(frame, p1, p2, self.line_color, self.line_thickness)
 
+    def draw_torso_fill(
+        self,
+        frame: np.ndarray,
+        points: Sequence[LandmarkPoint],
+    ) -> None:
+        """Draw a filled torso (shoulders → hips) in Mario red.
+
+        Fills the quadrilateral formed by landmarks 11, 12, 24, 23 so the
+        character's torso reads as a solid red body instead of bare lines.
+        Skipped when fewer than 3 of the shoulder/hip landmarks are visible.
+        """
+        torso = get_visible_polygon(points, [11, 12, 24, 23])
+        if torso and len(torso) >= 3:
+            cv2.fillPoly(
+                frame, [np.array(torso, dtype=np.int32)], MARIO_SHIRT
+            )
+
     # ------------------------------------------------------------------
     # Layer 3: Mario Bros styled rendering
     # ------------------------------------------------------------------
@@ -513,12 +530,13 @@ class SilhouetteDrawer:
         6. Joint markers
         7. "head_circle" — single filled circle at nose for the head
         8. "body_lines" — connection lines for body landmarks only (indices >= 11)
-        9. "mario_head" — Mario-style head (peach face circle + red cap + brown hair)
-        10. "mario_body" — Mario outfit lines (red shirt for arms/torus, blue overalls for legs)
-        11. "face_overlay" — real face crop overlaid at nose position (replaces head)
-        12. "minecraft_head" — Minecraft voxel head (square block: red cap top + peach face
+        9. "torso_fill" — solid red fill for the torso (shoulders → hips)
+        10. "mario_head" — Mario-style head (peach face circle + red cap + brown hair)
+        11. "mario_body" — Mario outfit lines (red shirt for arms/torus, blue overalls for legs)
+        12. "face_overlay" — real face crop overlaid at nose position (replaces head)
+        13. "minecraft_head" — Minecraft voxel head (square block: red cap top + peach face
             bottom + pixel eyes)
-        13. "minecraft_body" — Minecraft voxel body (red/blue oriented rectangles for limbs)
+        14. "minecraft_body" — Minecraft voxel body (red/blue oriented rectangles for limbs)
         """
         if styles is None:
             styles = ["mask", "polygons", "skeleton", "joints"]
@@ -535,6 +553,9 @@ class SilhouetteDrawer:
 
         if "polygons" in styles:
             self.draw_body_polygons(frame, points)
+
+        if "torso_fill" in styles:
+            self.draw_torso_fill(frame, points)
 
         if "skeleton" in styles and connections is not None:
             self.draw_skeleton(frame, points, connections)

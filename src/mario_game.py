@@ -68,6 +68,7 @@ from .game import (
 )
 from .sound_manager import SoundManager
 from .utils import LandmarkPoint
+from .character import mirror_points
 
 # --- Geometry constants ---
 WINDOW_NAME = "Juego Camara - Mario Bros"
@@ -76,6 +77,11 @@ GROUND_Y_RATIO = 0.85  # ground sits lower, leaving room for clouds/bushes above
 CHARACTER_X = 80
 CHARACTER_TARGET_HEIGHT = 90
 HEAD_RADIUS_MIN = 8
+TOP_MARGIN = 60.0  # px the character top may not rise above the screen top
+MAX_JUMP_OFFSET = max(  # highest jump offset that keeps the character on screen
+    GROUND_Y_RATIO * RESOLUTION[1] - CHARACTER_TARGET_HEIGHT - TOP_MARGIN,
+    1.0,
+)
 
 # --- Jump detection constants ---
 JUMP_THRESHOLD = 30.0
@@ -205,6 +211,9 @@ class MarioCharacter:
         if not self._on_ground:
             self._vy += GRAVITY
             self._jump_offset += self._vy
+            # Clamp the apex so the character never leaves the screen
+            if self._jump_offset > MAX_JUMP_OFFSET:
+                self._jump_offset = MAX_JUMP_OFFSET
             if self._jump_offset >= 0:
                 self._jump_offset = 0.0
                 self._vy = 0.0
@@ -320,7 +329,7 @@ class MarioCharacter:
             self._draw_fallback(frame)
             return
 
-        styles = ["mario_head", "mario_body"]
+        styles = ["mario_head", "mario_body", "torso_fill"]
         self._drawer.render_character(
             frame,
             self._render_points,
@@ -589,6 +598,9 @@ class MarioGameEngine:
         # Lives system
         self._lives = MAX_LIVES
 
+        # Coin counter (accumulated across obstacles and sky blocks)
+        self._coins = 0
+
         # Sky blocks (life-restoring blocks in the sky)
         self._sky_blocks: List[SkyBlock] = []
         self._sky_block_timer = 0
@@ -604,6 +616,11 @@ class MarioGameEngine:
     def lives(self) -> int:
         """Current number of lives remaining (0 to MAX_LIVES)."""
         return self._lives
+
+    @property
+    def coins(self) -> int:
+        """Current number of accumulated coins."""
+        return self._coins
 
     @property
     def state(self) -> int:
@@ -646,6 +663,7 @@ class MarioGameEngine:
 
         # Reset lives, sky blocks, clouds, and invincibility
         self._lives = MAX_LIVES
+        self._coins = 0
         self._sky_blocks = []
         self._sky_block_timer = 0
         self._clouds = []
@@ -674,6 +692,12 @@ class MarioGameEngine:
         landmarks: Optional[Sequence[LandmarkPoint]],
         connections: Optional[Sequence[tuple]],
     ) -> None:
+        # Mirror the pose so the miniatura character behaves like the player's
+        # mirror image: pointing forward along the character's path stays
+        # forward, instead of being rendered in reverse.
+        if landmarks is not None:
+            landmarks = mirror_points(landmarks, self.width)
+
         # 1. Update player physics (includes pose stability check)
         self._player.update(landmarks)
 
@@ -698,6 +722,7 @@ class MarioGameEngine:
             CHARACTER_X, self._player.bounding_box
         )
         if self._obstacle_manager.passed_count > old_passed_count:
+            self._coins += 1
             self._sound_manager.play_coin()
         if self._obstacle_manager.level > old_level:
             self._level_up_timer = LEVEL_UP_DISPLAY_FRAMES
@@ -820,7 +845,8 @@ class MarioGameEngine:
             self._render_game_over(frame, connections)
 
     def _render_static_environment(
-        self, frame: np.ndarray, draw_clouds: bool = True
+        self, frame: np.ndarray, draw_clouds: bool = True,
+        graffiti_y: Optional[int] = None,
     ) -> None:
         """Draw static clouds, bushes, and ground with graffiti (no sky fill).
 
@@ -829,6 +855,10 @@ class MarioGameEngine:
             draw_clouds: When False, static clouds are skipped (bushes, flowers,
                 ground, and graffiti are still drawn). During gameplay the sky is
                 populated only by the moving cloud layer.
+            graffiti_y: Baseline y for the graffiti text. When None, the text is
+                drawn just above the ground line (``ground_top - 10``); when a
+                value is given, the text baseline is placed at that y (used to
+                draw the graffiti over the bricks).
         """
         # Static clouds (only for menu / game-over backgrounds)
         if draw_clouds:
@@ -856,10 +886,11 @@ class MarioGameEngine:
                 cv2.rectangle(frame, (x + 2, y + 2), (x + brick_w - 2, y + brick_h - 2),
                               BRICK_STROKE, 1)
         # Graffiti text
+        graffiti_baseline = ground_top - 10 if graffiti_y is None else graffiti_y
         cv2.putText(
             frame,
             GRAFFITI_TEXT,
-            (self.width // 2 - 100, ground_top - 10),
+            (self.width // 2 - 100, graffiti_baseline),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
             GRAFFITI_COLOR,

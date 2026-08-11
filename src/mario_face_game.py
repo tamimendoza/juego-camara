@@ -16,6 +16,8 @@ Usage:
     # or: ./run_mario_face.sh
 """
 
+import os
+import random
 from typing import Optional
 
 import cv2
@@ -24,15 +26,77 @@ import numpy as np
 from .face_landmarker import FaceLandmarkerDetector
 from .face_crop import FaceCropper
 from .mario_game import (
+    BASE_SPEED,
     MarioCharacter,
     MarioGameEngine,
     RESOLUTION,
     WINDOW_NAME,
     SKY_COLOR,
     HUD_COLOR,
+    SKY_BLOCK_SIZE,
+    SKY_BLOCK_COLOR,
+    SKY_BLOCK_HEIGHT_RANGE,
+    CLOUD_COLOR,
+    CLOUD_SIZE_RANGE,
+    SkyBlock,
+    Cloud,
     POSE_WARNING_TEXT,
     POSE_WARNING_COLOR,
 )
+
+# --- Face Jump speed rules ---
+SPEED_INCREMENT = 0.1  # additive speed multiplier increase per level
+
+# --- Graffiti placement ---
+GRAFFITI_BRICK_Y_OFFSET = 15  # pixels below ground_y for the graffiti baseline
+
+
+def _resource_path(*parts: str) -> str:
+    """Resolve a path under the repo's ``sprites/`` directory."""
+    return os.path.join(os.path.dirname(__file__), "..", "sprites", *parts)
+
+
+def _load_sprite(*parts: str) -> Optional[np.ndarray]:
+    """Load a BGRA sprite with ``IMREAD_UNCHANGED``; return None on any failure."""
+    try:
+        img = cv2.imread(_resource_path(*parts), cv2.IMREAD_UNCHANGED)
+    except Exception:
+        return None
+    if img is None or img.ndim != 3 or img.shape[2] != 4:
+        return None
+    return img
+
+
+_CLOUD_SPRITE = _load_sprite("cloud_sprite.png")
+_SKY_BLOCK_SPRITE = _load_sprite("SMW_v-ram-yane_QuestionMarkBlock.png")
+
+
+class DrawnCloud(Cloud):
+    """A cloud drawn with overlapping puffy ellipses instead of a sprite.
+
+    Renders a wide, flat cloud with a row of rounded bumps on top so it reads
+    as a cloud rather than a flame. Movement and off-screen logic are inherited
+    from ``Cloud``.
+    """
+
+    def render(self, frame: np.ndarray) -> None:
+        x0 = int(self.x)
+        y0 = int(self.y)
+        w = int(self.width)
+        h = int(self.height)
+        cx = x0 + w // 2
+        bottom = y0 + h
+        r = max(h // 2, 3)
+
+        # Flat base band
+        cv2.rectangle(
+            frame, (x0, bottom - r), (x0 + w, bottom), self.color, -1,
+        )
+        # Rounded bumps on top of the base
+        bump_y = bottom - r
+        cv2.circle(frame, (cx - w // 4, bump_y), r, self.color, -1)
+        cv2.circle(frame, (cx, bump_y - r // 3), r, self.color, -1)
+        cv2.circle(frame, (cx + w // 4, bump_y), r, self.color, -1)
 
 
 class MarioFaceCharacter(MarioCharacter):
@@ -67,9 +131,9 @@ class MarioFaceCharacter(MarioCharacter):
             return
 
         if face_image is not None and face_mask is not None:
-            styles = ["mario_body", "face_overlay"]
+            styles = ["mario_body", "face_overlay", "torso_fill"]
         else:
-            styles = ["mario_head", "mario_body"]
+            styles = ["mario_head", "mario_body", "torso_fill"]
 
         self._drawer.render_character(
             frame,
@@ -100,6 +164,7 @@ class MarioFaceGameEngine(MarioGameEngine):
     """
 
     _FACE_CROP_RADIUS = 40
+    _FACE_PREVIEW_RADIUS = 25
 
     def __init__(
         self,
@@ -117,6 +182,12 @@ class MarioFaceGameEngine(MarioGameEngine):
         self._face_cropper = face_cropper
         self._face_image: np.ndarray = None
         self._face_mask: np.ndarray = None
+        self._sky_block_spawn_level = 1  # level at which the last sky block spawned
+
+    @property
+    def speed(self) -> float:
+        """Additive speed multiplier: ``BASE_SPEED * (1 + 0.1 * (level - 1))``."""
+        return BASE_SPEED * (1 + SPEED_INCREMENT * (self._obstacle_manager.level - 1))
 
     def detect_face(self, rgb_frame: np.ndarray, bgr_frame: np.ndarray) -> None:
         """Run FaceLandmarker detection and crop the face from the camera frame.
@@ -155,13 +226,18 @@ class MarioFaceGameEngine(MarioGameEngine):
         """
         super().update(points, connections)
 
+    def reset(self) -> None:
+        """Reset game state and the sky block spawn milestone."""
+        super().reset()
+        self._sky_block_spawn_level = 1
+
     def _render_game(self, frame: np.ndarray, connections: list) -> None:
         """Render the playing game state with face overlay on the character.
 
         Mirrors the parent's ``_render_game`` but passes the face crop to the
         player's render method for the face overlay.
         """
-        frame[:] = (200, 230, 255)
+        frame[:] = SKY_COLOR
 
         for cloud in self._clouds:
             cloud.render(frame)
@@ -169,7 +245,10 @@ class MarioFaceGameEngine(MarioGameEngine):
         for block in self._sky_blocks:
             block.render(frame)
 
-        self._render_static_environment(frame, draw_clouds=False)
+        self._render_static_environment(
+            frame, draw_clouds=False,
+            graffiti_y=self._ground_y + GRAFFITI_BRICK_Y_OFFSET,
+        )
 
         self._obstacle_manager.render(frame)
 
@@ -181,6 +260,8 @@ class MarioFaceGameEngine(MarioGameEngine):
         )
 
         self._draw_hud(frame)
+
+        self._draw_face_preview(frame)
 
         if self._player.scale_warning:
             cv2.putText(
@@ -200,7 +281,10 @@ class MarioFaceGameEngine(MarioGameEngine):
     def _render_menu(self, frame: np.ndarray) -> None:
         """Render the Mario Face Jump menu screen."""
         frame[:] = SKY_COLOR
-        self._render_static_environment(frame)
+        self._render_static_environment(
+            frame,
+            graffiti_y=self._ground_y + GRAFFITI_BRICK_Y_OFFSET,
+        )
 
         overlay = frame.copy()
         overlay[:] = (overlay * 0.5).astype(overlay.dtype)
@@ -216,5 +300,152 @@ class MarioFaceGameEngine(MarioGameEngine):
             frame,
             "Press SPACE to start",
             (cx - 100, self.height // 2 + 10),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
+        )
+
+    def _draw_face_preview(self, frame: np.ndarray) -> None:
+        """Draw a small live face preview circle on the bricks at the lower right.
+
+        Uses the same ``face_image`` / ``face_mask`` as the character's head so
+        the player can verify the face fits and is centered in the head circle
+        when standing far from the camera. When no face is detected, only the
+        circle outline is drawn.
+        """
+        center = (self.width - 35, self._ground_y + 30)
+        radius = self._FACE_PREVIEW_RADIUS
+
+        if self._face_image is not None and self._face_mask is not None:
+            FaceCropper().overlay_face(
+                frame, self._face_image, self._face_mask, center, radius,
+            )
+        else:
+            cv2.circle(frame, center, radius, HUD_COLOR, 1, cv2.LINE_AA)
+
+    def _update_sky_blocks(self, current_speed: float) -> None:
+        """Update sky blocks: move, grant coins on collect, spawn one per level up.
+
+        Unlike the base engine, collecting a sky block grants +1 coin (never a
+        life), and a single block spawns each time the level rises (every 5
+        obstacles passed) instead of on a random timer.
+        """
+        for block in self._sky_blocks:
+            block.update()
+
+        char_bbox = self._player.bounding_box
+        for block in self._sky_blocks:
+            if not block.collected and block.check_collision(char_bbox):
+                self._coins += 1
+                self._sound_manager.play_coin()
+                block.collected = True
+
+        self._sky_blocks = [
+            b for b in self._sky_blocks
+            if not b.off_screen() and not b.collected
+        ]
+
+        if self.level > self._sky_block_spawn_level:
+            self._sky_block_spawn_level = self.level
+            self._spawn_sky_block(current_speed)
+
+    def _spawn_sky_block(self, current_speed: float) -> None:
+        """Create a sky block at the right edge using the question-mark sprite."""
+        y = random.randint(*SKY_BLOCK_HEIGHT_RANGE)
+        block = SkyBlock(
+            x=self.width,
+            y=y,
+            size=SKY_BLOCK_SIZE,
+            color=SKY_BLOCK_COLOR,
+            speed=current_speed,
+            sprite=_SKY_BLOCK_SPRITE,
+        )
+        self._sky_blocks.append(block)
+
+    def _spawn_cloud(self, current_speed: float) -> None:
+        """Create a new cloud at the right edge using drawn puffy ellipses."""
+        width = random.randint(*CLOUD_SIZE_RANGE)
+        height = max(width // 4, 8)
+        y = random.randint(40, self._ground_y // 2)
+        cloud = DrawnCloud(
+            x=self.width,
+            y=y,
+            width=width,
+            height=height,
+            color=CLOUD_COLOR,
+            speed=current_speed,
+        )
+        self._clouds.append(cloud)
+
+    def _seed_clouds(self, current_speed: float) -> None:
+        """Populate the moving cloud layer across the sky with drawn clouds."""
+        for _ in range(5):
+            width = random.randint(*CLOUD_SIZE_RANGE)
+            height = max(width // 4, 8)
+            y = random.randint(40, self._ground_y // 2)
+            x = int(self.width * random.uniform(0.15, 0.95))
+            cloud = DrawnCloud(
+                x=x,
+                y=y,
+                width=width,
+                height=height,
+                color=CLOUD_COLOR,
+                speed=current_speed,
+            )
+            self._clouds.append(cloud)
+
+    def _draw_hud(self, frame: np.ndarray) -> None:
+        """Draw coins, level, additive speed multiplier, and hearts."""
+        speed_mult = 1 + SPEED_INCREMENT * (self._obstacle_manager.level - 1)
+        self._draw_hearts(frame)
+        cv2.putText(
+            frame, f"Monedas: {self._coins}",
+            (10, 25),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, HUD_COLOR, 1, cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, f"Nivel: {self._obstacle_manager.level}",
+            (10, 48),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, f"Velocidad: {speed_mult:.1f}x",
+            (10, 70),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
+        )
+
+    def _render_game_over(self, frame: np.ndarray, connections: list) -> None:
+        """Render game over screen with additive speed and total coins."""
+        self._render_game(frame, connections)
+        frame[:] = (frame * 0.4).astype(frame.dtype)
+
+        speed_mult = 1 + SPEED_INCREMENT * (self._obstacle_manager.level - 1)
+
+        cv2.putText(
+            frame, "GAME OVER",
+            (self.width // 2 - 80, self.height // 2 - 30),
+            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2, cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, f"Score: {self.passed_count}",
+            (self.width // 2 - 40, self.height // 2 + 10),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, HUD_COLOR, 1, cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, f"Nivel: {self._obstacle_manager.level}",
+            (self.width // 2 - 40, self.height // 2 + 40),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, f"Velocidad: {speed_mult:.1f}x",
+            (self.width // 2 - 40, self.height // 2 + 70),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, f"Monedas: {self._coins}",
+            (self.width // 2 - 40, self.height // 2 + 100),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, "Press SPACE to restart",
+            (self.width // 2 - 90, self.height // 2 + 130),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
         )

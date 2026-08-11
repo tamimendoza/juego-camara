@@ -13,18 +13,21 @@ arms/torus, blue overalls for legs) are preserved.
 
 ### Requirement: Face detection from webcam
 
-The system SHALL detect the player's face from the webcam feed using
-MediaPipe FaceMesh (468 face landmarks).
+The system SHALL detect the player's face from the webcam feed using the
+MediaPipe Tasks API FaceLandmarker (`models/face_landmarker.task`, 468 face
+landmarks), replacing the legacy FaceMesh solution API.
 
 #### Scenario: Face landmarks detected
 
 - **WHEN** the player is in front of the camera with their face visible
-- **THEN** the system runs FaceMesh on the RGB camera frame
+- **THEN** the system runs the FaceLandmarker Tasks API on the RGB camera
+  frame
 - **AND** returns 468 normalized face landmarks for the first detected face
+- **AND** returns a face bounding box when the model supports it
 
 #### Scenario: No face detected
 
-- **WHEN** the player's face is not visible or FaceMesh fails to detect
+- **WHEN** the player's face is not visible or FaceLandmarker fails to detect
 - **THEN** the system falls back to the existing Mario head circle (peach
   face + cap + hair arc)
 - **AND** the character still mimics pose and jump via PoseLandmarker
@@ -32,16 +35,21 @@ MediaPipe FaceMesh (468 face landmarks).
 ### Requirement: Face cropping from camera frame
 
 The system SHALL crop a circular face region from the BGR camera frame using
-FaceMesh face contour landmarks.
+the FaceLandmarker face bounding box (when available) for a tighter, more
+efficient crop, falling back to face contour landmarks when the bounding box
+is not provided.
 
 #### Scenario: Face region cropped
 
-- **WHEN** FaceMesh returns face landmarks
-- **THEN** the system uses the face contour landmarks (indices 1-200) to
-  determine the face boundary
-- **AND** crops a circular region centered at the nose tip (landmark 1)
-- **AND** creates a circular mask from the face contour
+- **WHEN** FaceLandmarker returns face landmarks (and optionally a face bounding box)
+- **THEN** the system uses the face bounding box to determine the face crop
+  region and center
+- **AND** crops a circular region centered on the face
+- **AND** creates a circular mask
 - **AND** returns the cropped face image (BGR) at the target radius
+- **AND** when no bounding box is available, the system falls back to using face
+  contour landmarks (indices 1–200), centering at the nose tip (landmark 1), as
+  in the previous implementation
 
 #### Scenario: Face crop size matches head circle
 
@@ -84,7 +92,8 @@ entirely.
 ### Requirement: Game startup and camera capture
 
 The system SHALL open the webcam and display a themed menu screen waiting
-for input, with FaceMesh initialized alongside PoseLandmarker.
+for input, with the FaceLandmarker detector initialized alongside
+PoseLandmarker.
 
 #### Scenario: Menu screen displayed
 

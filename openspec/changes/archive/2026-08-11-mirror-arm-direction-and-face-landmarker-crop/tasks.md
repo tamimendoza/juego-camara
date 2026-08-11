@@ -30,3 +30,17 @@
 - [x] 5.2 Run `pytest tests/test_mario_face_game.py -v` — all pass (including FaceLandmarker + bbox crop tests)
 - [x] 5.3 Run `pytest tests/ -v` — full suite passes, no regressions
 - [x] 5.4 Run `openspec validate --change "mirror-arm-direction-and-face-landmarker-crop"`
+
+## 6. Mirror arm direction in the games
+
+- [x] 6.1 Add `specs/game-character-mirror/spec.md` (ADDED Requirements: pose
+      mirrored in game engines; arms point forward; jump detection unaffected)
+- [x] 6.2 Mirror the pose in `MarioGameEngine._update_playing` so the miniatura
+      character points its arms forward along the character's path instead of in
+      reverse
+- [x] 6.3 Apply the same mirror in `GameEngine._update_playing` (base game) and
+      `MinecraftGameEngine._update_playing`
+- [x] 6.4 Add regression tests asserting arms point forward (image-right) in
+      `tests/test_mario_game.py`, `tests/test_game.py`, and
+      `tests/test_minecraft_game.py`
+- [x] 6.5 Run `pytest tests/ -v` — full suite passes, no regressions

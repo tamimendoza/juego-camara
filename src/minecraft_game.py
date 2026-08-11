@@ -60,6 +60,7 @@ from .game import (
 )
 from .sound_manager import SoundManager
 from .utils import LandmarkPoint
+from .character import mirror_points
 
 # --- Geometry constants ---
 WINDOW_NAME = "Juego Camara - Minecraft Mario"
@@ -68,6 +69,11 @@ GROUND_Y_RATIO = 0.85  # ground sits lower, leaving room for clouds above
 CHARACTER_X = 80
 CHARACTER_TARGET_HEIGHT = 110  # slightly taller than Mario variant (90) for block visibility
 HEAD_BLOCK_MIN = 18
+TOP_MARGIN = 60.0  # px the character top may not rise above the screen top
+MAX_JUMP_OFFSET = max(  # highest jump offset that keeps the character on screen
+    GROUND_Y_RATIO * RESOLUTION[1] - CHARACTER_TARGET_HEIGHT - TOP_MARGIN,
+    1.0,
+)
 
 # --- Jump detection constants ---
 JUMP_THRESHOLD = 30.0
@@ -223,6 +229,9 @@ class MinecraftMarioCharacter:
         if not self._on_ground:
             self._vy += GRAVITY
             self._jump_offset += self._vy
+            # Clamp the apex so the character never leaves the screen
+            if self._jump_offset > MAX_JUMP_OFFSET:
+                self._jump_offset = MAX_JUMP_OFFSET
             if self._jump_offset >= 0:
                 self._jump_offset = 0.0
                 self._vy = 0.0
@@ -826,6 +835,12 @@ class MinecraftGameEngine:
         landmarks: Optional[Sequence[LandmarkPoint]],
         connections: Optional[Sequence[tuple]],
     ) -> None:
+        # Mirror the pose so the miniatura character behaves like the player's
+        # mirror image: pointing forward along the character's path stays
+        # forward, instead of being rendered in reverse.
+        if landmarks is not None:
+            landmarks = mirror_points(landmarks, self.width)
+
         # 1. Update player physics
         self._player.update(landmarks)
 
