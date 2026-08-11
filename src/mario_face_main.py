@@ -29,13 +29,14 @@ import numpy as np
 
 from .camera import Camera
 from .mario_face_game import MarioFaceGameEngine, RESOLUTION, WINDOW_NAME
-from .face_detector import FaceDetector
+from .face_landmarker import FaceLandmarkerDetector
 from .face_crop import FaceCropper
 from .pose_detector import PoseDetector
 from .sound_manager import SoundManager
 from .utils import rgb_to_mp_image
 
 MODEL_PATH = "models/pose_landmarker_lite.task"
+FACE_MODEL_PATH = "models/face_landmarker.task"
 
 
 def main() -> int:
@@ -69,10 +70,23 @@ def main() -> int:
         camera.release()
         return 1
 
-    face_detector = FaceDetector()
+    try:
+        face_landmarker = FaceLandmarkerDetector(
+            model_path=FACE_MODEL_PATH,
+            num_faces=1,
+            min_face_detection_confidence=0.3,
+            min_face_presence_confidence=0.3,
+            min_tracking_confidence=0.3,
+        )
+    except (FileNotFoundError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        print("Run ./run_mario_face.sh to download the model automatically.", file=sys.stderr)
+        camera.release()
+        return 1
+
     face_cropper = FaceCropper()
 
-    engine = MarioFaceGameEngine(width, height, SoundManager(), face_detector, face_cropper)
+    engine = MarioFaceGameEngine(width, height, SoundManager(), face_landmarker, face_cropper)
     connections = list(detector.connections)
 
     print(f"Juego Camara — Mario Face Jump Game (camera /dev/video{args.camera})")
@@ -112,7 +126,7 @@ def main() -> int:
             engine.handle_key(key)
 
     finally:
-        face_detector.close()
+        face_landmarker.close()
         camera.release()
         detector.close()
         engine.close()

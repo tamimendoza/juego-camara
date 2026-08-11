@@ -29,15 +29,23 @@ class FaceCropper:
         width: int,
         height: int,
         target_radius: int,
+        face_bbox: Optional[Tuple[int, int, int, int]] = None,
     ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         """Crop a circular face region from the BGR camera frame.
 
+        When ``face_bbox`` is provided (from the FaceLandmarker Tasks API), the
+        crop is centered and sized from the bounding box for a tighter, more
+        efficient crop.  When it is ``None`` (legacy FaceMesh path), the
+        face contour landmarks are used to estimate the face boundary.
+
         Args:
             bgr_frame: The original BGR camera frame (H x W x 3).
-            face_landmarks: List of 468 FaceMesh landmarks (each with .x, .y in [0, 1]).
+            face_landmarks: List of 468 face landmarks (each with .x, .y in [0, 1]).
             width: Frame width in pixels.
             height: Frame height in pixels.
             target_radius: Desired radius of the circular face crop in pixels.
+            face_bbox: Optional face bounding box as ``(x, y, width, height)``
+                in pixel coordinates.  When provided, yields a tighter crop.
 
         Returns:
             A tuple of (face_image, face_mask) where:
@@ -58,27 +66,36 @@ class FaceCropper:
             py = int(lm.y * height)
             face_points.append((px, py))
 
-        # Need at least the nose tip landmark (index 1)
         if len(face_points) <= self._NOSE_TIP:
             return None
 
-        # Find face center: use nose tip (landmark 1) as the center
-        nose_x, nose_y = face_points[self._NOSE_TIP]
-
-        # Determine face size from face contour landmarks
-        # Use the horizontal spread of the face contour to estimate face width
-        contour_points = [face_points[i] for i in self._FACE_CONTOUR_INDICES if i < len(face_points)]
-
-        if len(contour_points) < 3:
-            # Fallback: use a fixed radius based on target
-            face_width = target_radius * 2
+        if face_bbox is not None:
+            # Use the face bounding box for a tighter, more efficient crop
+            bx, by, bw, bh = face_bbox
+            nose_x = bx + bw // 2
+            nose_y = by + bh // 2
+            face_radius = max(int(max(bw, bh) * 0.5), target_radius)
         else:
-            xs = [p[0] for p in contour_points]
-            face_width = max(xs) - min(xs)
+            # Legacy path: use nose tip as center, contour landmarks for width
+            nose_x, nose_y = face_points[self._NOSE_TIP]
 
-        # Face radius: use face_width / 2 as the crop radius, then scale to target
-        # This ensures the full face fits in the crop
-        face_radius = max(int(face_width * 0.45), target_radius)
+            # Determine face size from face contour landmarks
+            # Use the horizontal spread of the face contour to estimate face width
+            contour_points = [
+                face_points[i] for i in self._FACE_CONTOUR_INDICES
+                if i < len(face_points)
+            ]
+
+            if len(contour_points) < 3:
+                # Fallback: use a fixed radius based on target
+                face_width = target_radius * 2
+            else:
+                xs = [p[0] for p in contour_points]
+                face_width = max(xs) - min(xs)
+
+            # Face radius: use face_width / 2 as the crop radius, then scale to target
+            # This ensures the full face fits in the crop
+            face_radius = max(int(face_width * 0.45), target_radius)
 
         # Crop a square region centered at the nose, sized to 2 * face_radius
         crop_size = face_radius * 2

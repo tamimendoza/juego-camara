@@ -2,14 +2,14 @@
 
 Pipeline:
     camera.read_frame -> BGR->RGB conversion -> mp.Image -> PoseLandmarker.detect ->
-    FaceMesh.detect -> FaceCropper.crop_face -> landmark extraction ->
+    FaceLandmarker.detect -> FaceCropper.crop_face -> landmark extraction ->
     MarioFaceGameEngine.update -> MarioFaceGameEngine.render -> display
 
 This variant replaces the Mario character's head (peach face circle + red cap +
 brown hair arc) with the person's real face, cropped from the camera feed using
-MediaPipe FaceMesh landmarks.  The Mario body (red shirt + blue overalls) and
-all game mechanics (jump physics, obstacles, levels, lives, sound) are reused
-from the base Mario game.
+MediaPipe FaceLandmarker (Tasks API, ``face_landmarker.task``).  The Mario body
+(red shirt + blue overalls) and all game mechanics (jump physics, obstacles,
+levels, lives, sound) are reused from the base Mario game.
 
 Usage:
     python3 -m src.mario_face_main
@@ -21,7 +21,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from .face_detector import FaceDetector
+from .face_landmarker import FaceLandmarkerDetector
 from .face_crop import FaceCropper
 from .mario_game import (
     MarioCharacter,
@@ -85,16 +85,17 @@ class MarioFaceCharacter(MarioCharacter):
 class MarioFaceGameEngine(MarioGameEngine):
     """Mario Bros game engine variant with real face overlay.
 
-    Extends the base Mario game engine by adding MediaPipe FaceMesh detection
-    and face cropping.  The person's face is cropped from the camera feed and
-    overlaid on the Mario character's head position, replacing the peach
-    face circle + red cap + brown hair arc.
+    Extends the base Mario game engine by adding MediaPipe FaceLandmarker detection
+    (Tasks API with ``face_landmarker.task``) and face cropping.  The person's
+    face is cropped from the camera frame and overlaid on the Mario
+    character's head position, replacing the peach face circle + cap + hair
+    arc.
 
     Args:
         width: Display width in pixels.
         height: Display height in pixels.
         sound_manager: Sound manager instance.
-        face_detector: FaceDetector instance (FaceMesh wrapper).
+        face_landmarker: FaceLandmarkerDetector instance (Tasks API wrapper).
         face_cropper: FaceCropper instance.
     """
 
@@ -105,26 +106,26 @@ class MarioFaceGameEngine(MarioGameEngine):
         width: int,
         height: int,
         sound_manager,
-        face_detector: FaceDetector,
+        face_landmarker: FaceLandmarkerDetector,
         face_cropper: FaceCropper,
     ):
         super().__init__(width, height, sound_manager)
         self._player = MarioFaceCharacter(
             self._player.x, self._player.ground_y,
         )
-        self._face_detector = face_detector
+        self._face_landmarker = face_landmarker
         self._face_cropper = face_cropper
         self._face_image: np.ndarray = None
         self._face_mask: np.ndarray = None
 
     def detect_face(self, rgb_frame: np.ndarray, bgr_frame: np.ndarray) -> None:
-        """Run FaceMesh detection and crop the face from the camera frame.
+        """Run FaceLandmarker detection and crop the face from the camera frame.
 
         Args:
             rgb_frame: RGB frame from the camera (height x width x 3).
             bgr_frame: BGR frame from the camera (for face cropping).
         """
-        face_landmarks = self._face_detector.detect(rgb_frame)
+        face_landmarks, face_bbox = self._face_landmarker.detect(rgb_frame)
         if face_landmarks is not None:
             self._face_image, self._face_mask = self._face_cropper.crop_face(
                 bgr_frame,
@@ -132,6 +133,7 @@ class MarioFaceGameEngine(MarioGameEngine):
                 self.width,
                 self.height,
                 self._FACE_CROP_RADIUS,
+                face_bbox=face_bbox,
             )
         else:
             self._face_image = None
@@ -167,7 +169,7 @@ class MarioFaceGameEngine(MarioGameEngine):
         for block in self._sky_blocks:
             block.render(frame)
 
-        self._render_static_environment(frame)
+        self._render_static_environment(frame, draw_clouds=False)
 
         self._obstacle_manager.render(frame)
 

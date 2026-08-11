@@ -649,6 +649,7 @@ class MarioGameEngine:
         self._sky_blocks = []
         self._sky_block_timer = 0
         self._clouds = []
+        self._seed_clouds(self.speed)
         self._cloud_timer = 0
         self._invincibility_active = False
         self._sound_manager.stop_invincibility_theme()
@@ -792,6 +793,23 @@ class MarioGameEngine:
         )
         self._clouds.append(cloud)
 
+    def _seed_clouds(self, current_speed: float) -> None:
+        """Populate the moving cloud layer across the sky at game start."""
+        for _ in range(5):
+            width = random.randint(*CLOUD_SIZE_RANGE)
+            height = width * 2 // 3
+            y = random.randint(40, self._ground_y // 2)
+            x = int(self.width * random.uniform(0.15, 0.95))
+            cloud = Cloud(
+                x=x,
+                y=y,
+                width=width,
+                height=height,
+                color=CLOUD_COLOR,
+                speed=current_speed,
+            )
+            self._clouds.append(cloud)
+
     def render(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
         """Render the current game state onto the frame."""
         if self._state == self.MENU:
@@ -801,13 +819,23 @@ class MarioGameEngine:
         elif self._state == self.GAME_OVER:
             self._render_game_over(frame, connections)
 
-    def _render_static_environment(self, frame: np.ndarray) -> None:
-        """Draw static clouds, bushes, and ground with graffiti (no sky fill)."""
-        # Static clouds
-        for cx, cy in _CLOUD_OFFSETS:
-            cv2.ellipse(frame, (cx, cy), (30, 15), 0, 0, 360, CLOUD_COLOR, -1)
-            cv2.ellipse(frame, (cx - 25, cy + 5), (20, 12), 0, 0, 360, CLOUD_COLOR, -1)
-            cv2.ellipse(frame, (cx + 25, cy + 5), (20, 12), 0, 0, 360, CLOUD_COLOR, -1)
+    def _render_static_environment(
+        self, frame: np.ndarray, draw_clouds: bool = True
+    ) -> None:
+        """Draw static clouds, bushes, and ground with graffiti (no sky fill).
+
+        Args:
+            frame: The display canvas.
+            draw_clouds: When False, static clouds are skipped (bushes, flowers,
+                ground, and graffiti are still drawn). During gameplay the sky is
+                populated only by the moving cloud layer.
+        """
+        # Static clouds (only for menu / game-over backgrounds)
+        if draw_clouds:
+            for cx, cy in _CLOUD_OFFSETS:
+                cv2.ellipse(frame, (cx, cy), (30, 15), 0, 0, 360, CLOUD_COLOR, -1)
+                cv2.ellipse(frame, (cx - 25, cy + 5), (20, 12), 0, 0, 360, CLOUD_COLOR, -1)
+                cv2.ellipse(frame, (cx + 25, cy + 5), (20, 12), 0, 0, 360, CLOUD_COLOR, -1)
 
         # Bushes
         for bx, by in _BUSH_OFFSETS:
@@ -852,8 +880,8 @@ class MarioGameEngine:
         for block in self._sky_blocks:
             block.render(frame)
 
-        # Render static environment (bushes, ground with graffiti)
-        self._render_static_environment(frame)
+        # Render static environment (bushes, ground with graffiti; no static clouds)
+        self._render_static_environment(frame, draw_clouds=False)
 
         # Render obstacles
         self._obstacle_manager.render(frame)

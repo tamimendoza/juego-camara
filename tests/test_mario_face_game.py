@@ -61,6 +61,7 @@ from src.mario_game import (
 )
 from src.face_crop import FaceCropper
 from src.face_detector import FaceDetector
+from src.face_landmarker import FaceLandmarkerDetector
 from src.silhouette import SilhouetteDrawer, MARIO_FACE, MARIO_SHIRT, MARIO_OVERALL
 
 
@@ -164,6 +165,18 @@ def make_mock_face_cropper(crop_result=None):
     """Create a mock FaceCropper that returns the given result from crop_face()."""
     mock = MagicMock(spec=FaceCropper)
     mock.crop_face.return_value = crop_result
+    return mock
+
+
+def make_mock_face_landmarker(detect_result=None):
+    """Create a mock FaceLandmarkerDetector that returns the given result from detect().
+
+    The real detector returns (face_landmarks, face_bbox).  Pass a tuple for
+    detect_result; defaults to (None, None).
+    """
+    mock = MagicMock(spec=FaceLandmarkerDetector)
+    mock.detect.return_value = detect_result if detect_result is not None else (None, None)
+    mock.close.return_value = None
     return mock
 
 
@@ -384,8 +397,51 @@ class TestFaceCropper:
         cropper.overlay_face(frame, face_img, None, (320, 240), 20)
         assert frame.sum() == 0
 
+    def test_crop_face_with_bbox_uses_bbox_center(self):
+        """crop_face with face_bbox centers the crop on the bounding box."""
+        cropper = FaceCropper()
+        bgr_frame = np.full((480, 640, 3), (50, 100, 150), dtype=np.uint8)
+        landmarks = make_face_landmarks(nose_x=320, nose_y=240)
+        face_bbox = (280, 200, 80, 80)  # center at (320, 240)
 
-# --- FaceDetector Tests ------------------------------------------------------
+        result = cropper.crop_face(
+            bgr_frame, landmarks, 640, 480, 40, face_bbox=face_bbox
+        )
+
+        assert result is not None
+        face_img, face_mask = result
+        assert face_img.shape == (80, 80, 3)
+        assert face_mask.shape == (80, 80)
+
+    def test_crop_face_with_bbox_uses_contour_fallback_when_none(self):
+        """crop_face with face_bbox=None falls back to contour landmarks."""
+        cropper = FaceCropper()
+        bgr_frame = np.full((480, 640, 3), (50, 100, 150), dtype=np.uint8)
+        landmarks = make_face_landmarks(nose_x=320, nose_y=240)
+
+        result_no_bbox = cropper.crop_face(bgr_frame, landmarks, 640, 480, 40)
+        result_with_none = cropper.crop_face(
+            bgr_frame, landmarks, 640, 480, 40, face_bbox=None
+        )
+
+        assert result_no_bbox is not None
+        assert result_with_none is not None
+        # Both should produce same-size output
+        assert result_no_bbox[0].shape == result_with_none[0].shape
+
+    def test_crop_face_with_bbox_produces_circular_mask(self):
+        """crop_face with face_bbox still produces a circular mask."""
+        cropper = FaceCropper()
+        bgr_frame = np.full((480, 640, 3), (50, 100, 150), dtype=np.uint8)
+        landmarks = make_face_landmarks(nose_x=320, nose_y=240)
+        face_bbox = (280, 200, 80, 80)
+
+        face_img, face_mask = cropper.crop_face(
+            bgr_frame, landmarks, 640, 480, 40, face_bbox=face_bbox
+        )
+
+        assert face_mask[40, 40] == 255  # center opaque
+        assert face_mask[0, 0] == 0      # corner transparent
 
 class TestFaceDetector:
     def test_detect_returns_landmarks_when_face_found(self):
@@ -445,14 +501,118 @@ class TestFaceDetector:
             assert mock_instance.close.called
 
 
+# --- FaceLandmarkerDetector Tests ---------------------------------------------
+
+class FakeFaceLandmarkerResult:
+    """Mock of FaceLandmarkerResult for testing."""
+
+    def __init__(self, face_landmarks=None):
+        self.face_landmarks = face_landmarks if face_landmarks is not None else []
+
+
+def make_face_landmarker_with_mock():
+    """Create a FaceLandmarkerDetector that bypasses __init__ (no model file needed)."""
+    detector = FaceLandmarkerDetector.__new__(FaceLandmarkerDetector)
+    detector._landmarker = MagicMock()
+    detector._last_timestamp = 0
+    return detector
+
+
+class TestFaceLandmarkerDetector:
+    def test_detect_returns_landmarks_and_bbox_when_face_found(self):
+        """detect() returns face landmarks and a computed bbox when a face is found."""
+        detector = make_face_landmarker_with_mock()
+        mock_landmarks = make_face_landmarks(nose_x=320, nose_y=240)
+        detector._landmarker.detect_for_video.return_value = FakeFaceLandmarkerResult(
+            face_landmarks=[mock_landmarks]
+        )
+
+        rgb_frame = np.full((480, 640, 3), (50, 100, 150), dtype=np.uint8)
+        result_landmarks, result_bbox = detector.detect(rgb_frame)
+
+        assert result_landmarks is not None
+        assert len(result_landmarks) == 468
+        assert result_bbox is not None
+        assert len(result_bbox) == 4  # (x, y, width, height)
+
+    def test_detect_bbox_computed_from_landmarks(self):
+        """detect() computes the bbox from face landmark min/max coordinates."""
+        detector = make_face_landmarker_with_mock()
+        # Landmarks centered at (320, 240), spread ~40px around
+        mock_landmarks = make_face_landmarks(nose_x=320, nose_y=240)
+        detector._landmarker.detect_for_video.return_value = FakeFaceLandmarkerResult(
+            face_landmarks=[mock_landmarks]
+        )
+
+        rgb_frame = np.full((480, 640, 3), (50, 100, 150), dtype=np.uint8)
+        _, bbox = detector.detect(rgb_frame)
+
+        x, y, w, h = bbox
+        assert x > 0 and x < 640
+        assert y > 0 and y < 480
+        assert w > 0 and h > 0
+
+    def test_detect_returns_none_when_no_face(self):
+        """detect() returns (None, None) when FaceLandmarker detects no face."""
+        detector = make_face_landmarker_with_mock()
+        detector._landmarker.detect_for_video.return_value = FakeFaceLandmarkerResult(
+            face_landmarks=[]
+        )
+
+        rgb_frame = np.full((480, 640, 3), (50, 100, 150), dtype=np.uint8)
+        landmarks, bbox = detector.detect(rgb_frame)
+
+        assert landmarks is None
+        assert bbox is None
+
+    def test_detect_auto_generates_timestamp(self):
+        """detect() generates a monotonic timestamp when one is not provided."""
+        detector = make_face_landmarker_with_mock()
+        detector._landmarker.detect_for_video.return_value = FakeFaceLandmarkerResult(
+            face_landmarks=[]
+        )
+
+        rgb_frame = np.full((480, 640, 3), (50, 100, 150), dtype=np.uint8)
+        detector.detect(rgb_frame)
+
+        call_args = detector._landmarker.detect_for_video.call_args
+        assert call_args is not None
+        assert len(call_args[0]) == 2  # image + timestamp_ms
+
+    def test_detect_uses_explicit_timestamp(self):
+        """detect() uses the provided timestamp."""
+        detector = make_face_landmarker_with_mock()
+        detector._landmarker.detect_for_video.return_value = FakeFaceLandmarkerResult(
+            face_landmarks=[]
+        )
+
+        rgb_frame = np.full((480, 640, 3), (50, 100, 150), dtype=np.uint8)
+        detector.detect(rgb_frame, timestamp_ms=99999)
+
+        call_args = detector._landmarker.detect_for_video.call_args
+        assert call_args[0][1] == 99999
+
+    def test_init_raises_filenotfound_when_model_missing(self):
+        """FaceLandmarkerDetector raises FileNotFoundError when model file is missing."""
+        with pytest.raises(FileNotFoundError, match="Face landmark model file not found"):
+            FaceLandmarkerDetector(model_path="/nonexistent/face_landmarker.task")
+
+    def test_close_calls_landmarker_close(self):
+        """close() releases the underlying FaceLandmarker resources."""
+        detector = make_face_landmarker_with_mock()
+        detector.close()
+        assert detector._landmarker.close.called
+
+
 # --- MarioFaceGameEngine Tests -----------------------------------------------
 
 class TestMarioFaceGameEngine:
-    def _make_engine(self, mock_face_detector=None, mock_face_cropper=None):
+    def _make_engine(self, mock_face_landmarker=None, mock_face_cropper=None):
         """Create a MarioFaceGameEngine with mock face components."""
-        if mock_face_detector is None:
-            mock_face_detector = MagicMock(spec=FaceDetector)
-            mock_face_detector.detect.return_value = None
+        if mock_face_landmarker is None:
+            mock_face_landmarker = MagicMock(spec=FaceLandmarkerDetector)
+            mock_face_landmarker.detect.return_value = (None, None)
+            mock_face_landmarker.close.return_value = None
         if mock_face_cropper is None:
             mock_face_cropper = MagicMock(spec=FaceCropper)
             mock_face_cropper.crop_face.return_value = None
@@ -460,7 +620,7 @@ class TestMarioFaceGameEngine:
         engine = MarioFaceGameEngine(
             WIDTH, HEIGHT,
             sound_manager=MagicMock(),
-            face_detector=mock_face_detector,
+            face_landmarker=mock_face_landmarker,
             face_cropper=mock_face_cropper,
         )
         return engine
@@ -484,10 +644,11 @@ class TestMarioFaceGameEngine:
         assert engine.state == MarioGameEngine.PLAYING
 
     def test_detect_face_stores_crop_when_face_found(self):
-        """detect_face stores the cropped face when FaceMesh finds a face."""
-        mock_detector = MagicMock(spec=FaceDetector)
+        """detect_face stores the cropped face when FaceLandmarker finds a face."""
+        mock_detector = MagicMock(spec=FaceLandmarkerDetector)
         mock_landmarks = make_face_landmarks()
-        mock_detector.detect.return_value = mock_landmarks
+        mock_bbox = (280, 200, 80, 80)
+        mock_detector.detect.return_value = (mock_landmarks, mock_bbox)
 
         face_img, face_mask = make_face_crop()
         mock_cropper = MagicMock(spec=FaceCropper)
@@ -501,13 +662,16 @@ class TestMarioFaceGameEngine:
 
         assert mock_detector.detect.called
         assert mock_cropper.crop_face.called
+        # Verify bbox is passed as keyword arg
+        _, kwargs = mock_cropper.crop_face.call_args
+        assert kwargs.get("face_bbox") == mock_bbox
         assert engine._face_image is not None
         assert engine._face_mask is not None
 
     def test_detect_face_clears_crop_when_no_face(self):
-        """detect_face clears the face crop when FaceMesh finds no face."""
-        mock_detector = MagicMock(spec=FaceDetector)
-        mock_detector.detect.return_value = None
+        """detect_face clears the face crop when FaceLandmarker finds no face."""
+        mock_detector = MagicMock(spec=FaceLandmarkerDetector)
+        mock_detector.detect.return_value = (None, None)
         mock_cropper = MagicMock(spec=FaceCropper)
         mock_cropper.crop_face.return_value = None
 
@@ -704,7 +868,8 @@ class TestMarioFaceGameEngine:
 
     def test_render_game_with_face_overlay(self):
         """Playing render with face crop draws face overlay without crashing."""
-        mock_detector = MagicMock(spec=FaceDetector)
+        mock_detector = MagicMock(spec=FaceLandmarkerDetector)
+        mock_detector.detect.return_value = (make_face_landmarks(), (280, 200, 80, 80))
         mock_cropper = MagicMock(spec=FaceCropper)
         face_img, face_mask = make_face_crop()
         mock_cropper.crop_face.return_value = (face_img, face_mask)

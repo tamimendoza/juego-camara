@@ -1038,6 +1038,46 @@ class TestMarioGameEngine:
         engine._update_clouds(BASE_SPEED)
         assert cloud.x == pytest.approx(old_x - BASE_SPEED * CLOUD_SPEED_FACTOR)
 
+    def test_cloud_layer_seeded_at_start(self):
+        """The moving cloud layer is populated when a game starts."""
+        engine = self._make_engine()
+        assert engine._clouds == []
+        engine.start()
+        assert len(engine._clouds) >= 4
+
+    def test_seeded_clouds_all_move_leftward(self):
+        """Every seeded cloud moves leftward during cloud updates."""
+        engine = self._make_engine()
+        engine.start()
+        old_xs = [cloud.x for cloud in engine._clouds]
+        engine._update_clouds(BASE_SPEED)
+        for cloud, old_x in zip(engine._clouds, old_xs):
+            assert cloud.x == pytest.approx(old_x - BASE_SPEED * CLOUD_SPEED_FACTOR)
+
+    def test_static_clouds_skipped_when_draw_clouds_false(self):
+        """draw_clouds=False draws no static clouds above the ground."""
+        engine = self._make_engine()
+        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        engine._render_static_environment(frame, draw_clouds=False)
+        sky_region = frame[:engine._ground_y - 1]
+        assert not np.any(
+            (sky_region[:, :, 0] == CLOUD_COLOR[0])
+            & (sky_region[:, :, 1] == CLOUD_COLOR[1])
+            & (sky_region[:, :, 2] == CLOUD_COLOR[2])
+        )
+
+    def test_static_clouds_drawn_when_draw_clouds_true(self):
+        """draw_clouds=True keeps the static clouds (menu/game-over background)."""
+        engine = self._make_engine()
+        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        engine._render_static_environment(frame)
+        sky_region = frame[:engine._ground_y - 1]
+        assert np.any(
+            (sky_region[:, :, 0] == CLOUD_COLOR[0])
+            & (sky_region[:, :, 1] == CLOUD_COLOR[1])
+            & (sky_region[:, :, 2] == CLOUD_COLOR[2])
+        )
+
     # --- Invincibility theme tests ---
 
     def test_invincibility_theme_plays_at_threshold(self):
