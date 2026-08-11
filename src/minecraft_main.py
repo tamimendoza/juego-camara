@@ -7,8 +7,9 @@ Pipeline:
 The player jumps by physically raising above their standing baseline. A
 blocky, Minecraft-styled Mario character at the bottom of the screen mirrors
 the jump and must clear scrolling obstacles. Obstacles start widely separated
-(level 1) and tighten every 10 obstacles passed. Every 10 obstacles cleared,
+(level 1) and tighten every 5 obstacles passed. Every 5 obstacles cleared,
 the player levels up; from level 2, speed increases 10% per level.
+The player has 3 lives (hearts); losing all lives ends the game.
 
 Usage:
     python3 -m src.minecraft_main

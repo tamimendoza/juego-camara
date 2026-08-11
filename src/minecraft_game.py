@@ -11,9 +11,9 @@ color palette (red cap, peach face, red shirt, blue overalls) against a
 Minecraft-themed background (sky blue, pixel clouds, grass-block ground).
 
 Obstacles (pipes, blocks, goombas) start widely separated so players can advance
-through levels, with spacing tightening every 10 obstacles passed. Every 10
+through levels, with spacing tightening every 5 obstacles passed. Every 5
 obstacles cleared, the player levels up; from level 2, speed increases 10% per
-level. Game ends on collision.
+level. The player has 3 lives (hearts); losing all lives ends the game.
 
 Usage:
     python3 -m src.minecraft_main
@@ -32,7 +32,32 @@ from .silhouette import (
     MARIO_SHIRT, MARIO_OVERALL,
     MC_SKY, MC_GRASS_TOP, MC_DIRT, MC_CLOUD, MC_BLOCK_BORDER, MC_EYE,
 )
-from .game import JumpDetector, GRAVITY, JUMP_VELOCITY, BASE_SPEED, SPEED_MULTIPLIER
+from .game import (
+    JumpDetector,
+    GRAVITY,
+    JUMP_VELOCITY,
+    BASE_SPEED,
+    SPEED_MULTIPLIER,
+    MAX_LIVES,
+    HEART_COLOR,
+    SKY_BLOCK_SIZE,
+    SKY_BLOCK_COLOR,
+    SKY_BLOCK_SPEED_FACTOR,
+    SKY_BLOCK_SPAWN_INTERVAL,
+    SKY_BLOCK_SIZE_RANGE,
+    SKY_BLOCK_HEIGHT_RANGE,
+    CLOUD_COLOR,
+    CLOUD_SPEED_FACTOR,
+    CLOUD_SPAWN_INTERVAL,
+    CLOUD_SIZE_RANGE,
+    POSE_WARNING_TEXT,
+    POSE_WARNING_COLOR,
+    MIN_SHOULDER_WIDTH,
+    MAX_SHOULDER_WIDTH,
+    INVINCIBILITY_THRESHOLD,
+    SkyBlock,
+    Cloud,
+)
 from .sound_manager import SoundManager
 from .utils import LandmarkPoint
 
@@ -86,7 +111,7 @@ BLOCK_LINE_WIDTH = 3  # thickness for oriented-rect limb blocks
 BLOCK_BORDER_WIDTH = 1  # outline for each block
 
 # --- Level / spacing constants ---
-LEVEL_INTERVAL = 10
+LEVEL_INTERVAL = 5
 LEVEL_SPAWN_GAP_RANGES = [
     (180, 280),  # Level 1: very spacious
     (150, 250),  # Level 2
@@ -112,6 +137,7 @@ SKY_COLOR = MC_SKY
 CLOUD_COLOR = MC_CLOUD
 GRASS_COLOR = MC_GRASS_TOP
 DIRT_COLOR = MC_DIRT
+BRICK_COLOR = (0, 128, 255)  # orange-red bricks (BGR) — shared ground color
 HUD_COLOR = (255, 255, 255)     # white HUD
 GAME_OVER_COLOR = (0, 0, 255)   # red game over text
 LEVEL_UP_COLOR = (0, 255, 255)  # yellow level-up text
@@ -120,6 +146,13 @@ LEVEL_UP_COLOR = (0, 255, 255)  # yellow level-up text
 PIPE_COLOR = (0, 180, 0)        # green pipes
 BLOCK_COLOR = (30, 165, 200)    # orange blocks
 GOOMBA_COLOR = (0, 50, 200)     # red-brown goombas
+
+# --- Graffiti constants ---
+GRAFFITI_TEXT = "MC"
+GRAFFITI_COLOR = (255, 255, 255)  # white graffiti text
+
+# --- Sky / cloud rendering constants ---
+SKY_BLUE = (200, 230, 255)  # light sky blue for playing background
 
 # --- Static environment element positions ---
 _CLOUD_OFFSETS = [
@@ -524,7 +557,14 @@ class MinecraftObstacle:
         return self.x + self.width < 0
 
     def check_collision(self, bbox: tuple) -> bool:
-        """AABB collision check. bbox = (x, y, w, h)."""
+        """AABB collision check. bbox = (x, y, w, h).
+
+        Returns ``False`` once the obstacle has been marked as passed (the
+        coin sound has already been scored), preventing the character from
+        colliding with an obstacle that has already cleared them.
+        """
+        if self.passed:
+            return False
         return self._aabb_overlap(
             (self.x, self.ground_y - self.height, self.width, self.height),
             bbox,
@@ -554,7 +594,7 @@ class MinecraftObstacleManager:
     """Spawns Minecraft-themed obstacles, tracks score, level, and controls speed.
 
     Obstacles start widely separated (level 1) and the spawn gap tightens
-    every ``LEVEL_INTERVAL`` (30) obstacles passed, up to ``MAX_LEVEL``.
+    every ``LEVEL_INTERVAL`` (5) obstacles passed, up to ``MAX_LEVEL``.
     """
 
     def __init__(
@@ -638,8 +678,16 @@ class MinecraftObstacleManager:
         self._obstacles.append(obs)
 
     def check_collisions(self, character_bbox: tuple) -> bool:
-        """Return True if any obstacle collides with the character bbox."""
-        return any(obs.check_collision(character_bbox) for obs in self._obstacles)
+        """Return True if any obstacle collides with the character bbox.
+
+        Removes the colliding obstacle to prevent repeated collision
+        detection across consecutive frames.
+        """
+        for i, obs in enumerate(self._obstacles):
+            if obs.check_collision(character_bbox):
+                del self._obstacles[i]
+                return True
+        return False
 
     def render(self, frame: np.ndarray) -> None:
         """Draw all obstacles."""
@@ -687,6 +735,25 @@ class MinecraftGameEngine:
         self._frame_count = 0
         self._level_up_timer = 0
 
+        # Lives system
+        self._lives = MAX_LIVES
+
+        # Sky blocks (life-restoring blocks in the sky)
+        self._sky_blocks: List[SkyBlock] = []
+        self._sky_block_timer = 0
+
+        # Moving clouds (parallax background)
+        self._clouds: List[Cloud] = []
+        self._cloud_timer = 0
+
+        # Invincibility theme state
+        self._invincibility_active = False
+
+    @property
+    def lives(self) -> int:
+        """Current number of lives remaining (0 to MAX_LIVES)."""
+        return self._lives
+
     @property
     def state(self) -> int:
         return self._state
@@ -712,9 +779,10 @@ class MinecraftGameEngine:
         return BASE_SPEED * multiplier
 
     def start(self) -> None:
-        """Transition to PLAYING state."""
+        """Transition to PLAYING state and start background music."""
         self.reset()
         self._state = self.PLAYING
+        self._sound_manager.play_background_music()
 
     def reset(self) -> None:
         """Reset all game state to initial values."""
@@ -724,9 +792,18 @@ class MinecraftGameEngine:
         self._frame_count = 0
         self._level_up_timer = 0
         self._state = self.MENU
+        # Reset lives, sky blocks, clouds, and invincibility
+        self._lives = MAX_LIVES
+        self._sky_blocks = []
+        self._sky_block_timer = 0
+        self._clouds = []
+        self._cloud_timer = 0
+        self._invincibility_active = False
+        self._sound_manager.stop_invincibility_theme()
 
     def close(self) -> None:
         """Clean up resources (sound manager)."""
+        self._sound_manager.stop_background_music()
         self._sound_manager.close()
 
     def update(
@@ -749,19 +826,30 @@ class MinecraftGameEngine:
         landmarks: Optional[Sequence[LandmarkPoint]],
         connections: Optional[Sequence[tuple]],
     ) -> None:
-        # 1. Detect jump from pose — only when detection quality is good
-        if landmarks is not None and not self._player.scale_warning:
+        # 1. Update player physics
+        self._player.update(landmarks)
+
+        # 2. Pose stability: pause game if pose not fully detected
+        if self._player.scale_warning:
+            self._sound_manager.play_pose_warning()
+            return
+
+        # 3. Detect jump from pose
+        if landmarks is not None:
             if self._jump_detector.update(landmarks):
                 self._player.jump()
 
-        # 2. Update player physics
-        self._player.update(landmarks)
-
-        # 3. Update speed based on score
+        # 4. Update speed based on score
         current_speed = self.speed
         self._obstacle_manager.set_speed(current_speed)
 
-        # 4. Update obstacles (handles level-up detection)
+        # 5. Update sky blocks (life-restoring blocks)
+        self._update_sky_blocks(current_speed)
+
+        # 6. Update moving clouds (parallax background)
+        self._update_clouds(current_speed)
+
+        # 7. Update obstacles (handles level-up detection)
         old_level = self._obstacle_manager.level
         old_passed = self._obstacle_manager.passed_count
         self._obstacle_manager.update(
@@ -772,14 +860,87 @@ class MinecraftGameEngine:
         if self._obstacle_manager.level > old_level:
             self._level_up_timer = LEVEL_UP_DISPLAY_FRAMES
 
-        # 5. Collision check
-        if self._obstacle_manager.check_collisions(self._player.bounding_box):
-            self._sound_manager.play_game_over()
-            self._state = self.GAME_OVER
+        # 8. Check sky block collection (restore life)
+        self._check_sky_block_collection()
 
-        # 6. Decrement level-up timer
+        # 9. Invincibility theme: play when score reaches threshold
+        if (
+            not self._invincibility_active
+            and self._obstacle_manager.passed_count >= INVINCIBILITY_THRESHOLD
+        ):
+            self._invincibility_active = True
+            self._sound_manager.play_invincibility_theme()
+
+        # 10. Collision check — lose a life instead of immediate game over
+        if self._obstacle_manager.check_collisions(self._player.bounding_box):
+            self._lives -= 1
+            if self._lives > 0:
+                self._sound_manager.play_hit()
+            else:
+                self._sound_manager.play_game_over()
+                self._state = self.GAME_OVER
+
+        # 11. Decrement level-up timer
         if self._level_up_timer > 0:
             self._level_up_timer -= 1
+
+    # --- Sky blocks (life-restoring blocks) ---
+
+    def _update_sky_blocks(self, speed: float) -> None:
+        """Move sky blocks leftward and spawn new ones periodically."""
+        for block in self._sky_blocks:
+            block.x -= speed * SKY_BLOCK_SPEED_FACTOR
+        self._sky_blocks = [b for b in self._sky_blocks if not b.off_screen()]
+        self._sky_block_timer -= 1
+        if self._sky_block_timer <= 0:
+            self._spawn_sky_block()
+            self._sky_block_timer = random.randint(*SKY_BLOCK_SPAWN_INTERVAL)
+
+    def _spawn_sky_block(self) -> None:
+        """Create a new sky block at the right edge."""
+        x = self.width
+        y = random.randint(*SKY_BLOCK_HEIGHT_RANGE)
+        size = random.randint(*SKY_BLOCK_SIZE_RANGE)
+        block = SkyBlock(
+            x=x, y=y, size=size,
+            color=SKY_BLOCK_COLOR, speed=BASE_SPEED,
+        )
+        self._sky_blocks.append(block)
+
+    def _check_sky_block_collection(self) -> None:
+        """Check if the character collects a sky block (restores a life)."""
+        if self._lives >= MAX_LIVES:
+            return
+        for i, block in enumerate(self._sky_blocks):
+            if block.check_collision(self._player.bounding_box):
+                block.collected = True
+                self._lives = min(self._lives + 1, MAX_LIVES)
+                self._sound_manager.play_coin()
+                return
+
+    # --- Moving clouds (parallax background) ---
+
+    def _update_clouds(self, speed: float) -> None:
+        """Move clouds leftward at a slower speed and spawn new ones."""
+        for cloud in self._clouds:
+            cloud.x -= speed * CLOUD_SPEED_FACTOR
+        self._clouds = [c for c in self._clouds if not c.off_screen()]
+        self._cloud_timer -= 1
+        if self._cloud_timer <= 0:
+            self._spawn_cloud()
+            self._cloud_timer = random.randint(*CLOUD_SPAWN_INTERVAL)
+
+    def _spawn_cloud(self) -> None:
+        """Create a new cloud at the right edge."""
+        width = random.randint(*CLOUD_SIZE_RANGE)
+        height = max(width // 2, 20)
+        y = random.randint(30, 120)
+        cloud = Cloud(
+            x=self.width, y=y,
+            width=width, height=height,
+            color=CLOUD_COLOR, speed=BASE_SPEED,
+        )
+        self._clouds.append(cloud)
 
     def render(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
         """Render the current game state onto the frame."""
@@ -790,8 +951,8 @@ class MinecraftGameEngine:
         elif self._state == self.GAME_OVER:
             self._render_game_over(frame, connections)
 
-    def _render_background(self, frame: np.ndarray) -> None:
-        """Draw the Minecraft sky, pixel clouds, and grass-block ground."""
+    def _render_static_environment(self, frame: np.ndarray) -> None:
+        """Draw the Minecraft sky, pixel clouds, and grass-block ground with graffiti."""
         # Sky
         frame[:] = SKY_COLOR
 
@@ -817,9 +978,30 @@ class MinecraftGameEngine:
         cv2.line(frame, (0, ground_top), (self.width, ground_top), MC_BLOCK_BORDER, 1)
         cv2.line(frame, (0, dirt_top), (self.width, dirt_top), MC_BLOCK_BORDER, 1)
 
+        # Graffiti text on the ground
+        text = GRAFFITI_TEXT
+        (text_w, text_h), _ = cv2.getTextSize(
+            text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+        )
+        text_x = self.width - text_w - 10
+        text_y = dirt_top + text_h + 5
+        cv2.putText(
+            frame, text, (text_x, text_y),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, GRAFFITI_COLOR, 1, cv2.LINE_AA,
+        )
+
     def _render_game(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
         """Render playing game: Minecraft background + character + obstacles + HUD."""
-        self._render_background(frame)
+        # Light sky blue background (overridden by static environment)
+        frame[:] = (200, 230, 255)
+        # Moving clouds (parallax background)
+        for cloud in self._clouds:
+            cloud.render(frame)
+        # Sky blocks (life-restoring blocks)
+        for block in self._sky_blocks:
+            block.render(frame)
+        # Static environment (pixel clouds, bushes, grass-block ground with graffiti)
+        self._render_static_environment(frame)
         self._player.render(frame, connections)
         self._obstacle_manager.render(frame)
         self._draw_hud(frame)
@@ -838,7 +1020,8 @@ class MinecraftGameEngine:
 
     def _render_menu(self, frame: np.ndarray) -> None:
         """Render the Minecraft-themed menu screen."""
-        self._render_background(frame)
+        frame[:] = SKY_COLOR
+        self._render_static_environment(frame)
 
         # Darken slightly for menu overlay
         overlay = frame.copy()
@@ -910,9 +1093,47 @@ class MinecraftGameEngine:
             cv2.FONT_HERSHEY_SIMPLEX, font_scale, LEVEL_UP_COLOR, thickness, cv2.LINE_AA,
         )
 
+    def _draw_hearts(self, frame: np.ndarray) -> None:
+        """Draw hearts for remaining lives in the top-right corner."""
+        for i in range(MAX_LIVES):
+            color = HEART_COLOR if i < self._lives else (100, 100, 100)
+            cx = self.width - 30 - i * 25
+            cy = 25
+            cv2.ellipse(
+                frame,
+                (cx, cy),
+                (10, 10),
+                0,
+                0,
+                360,
+                color,
+                -1,
+            )
+            cv2.ellipse(
+                frame,
+                (cx - 7, cy),
+                (5, 5),
+                0,
+                0,
+                360,
+                color,
+                -1,
+            )
+            cv2.ellipse(
+                frame,
+                (cx + 7, cy),
+                (5, 5),
+                0,
+                0,
+                360,
+                color,
+                -1,
+            )
+
     def _draw_hud(self, frame: np.ndarray) -> None:
-        """Draw score, level, and speed on the frame."""
+        """Draw score, level, speed, and hearts on the frame."""
         speed_mult = SPEED_MULTIPLIER ** (self._obstacle_manager.level - 1)
+        self._draw_hearts(frame)
         cv2.putText(
             frame, f"Bloques: {self.passed_count}",
             (10, 25),

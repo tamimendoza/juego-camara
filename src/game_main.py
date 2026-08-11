@@ -5,8 +5,8 @@ Pipeline:
     GameEngine.update → GameEngine.render → display with OpenCV
 
 The player jumps by physically raising above their standing baseline. A
-miniatura character must clear scrolling obstacles. Speed increases every 10
-obstacles passed. Game ends on collision.
+miniatura character must clear scrolling obstacles. Speed increases every 5
+obstacles passed. The player has 3 lives (hearts); losing all lives ends the game.
 
 Usage:
     python3 -m src.game_main

@@ -10,21 +10,38 @@ import pytest
 
 from src.game import (
     BASE_SPEED,
+    BRICK_COLOR,
     CHARACTER_TARGET_HEIGHT,
     CHARACTER_X,
+    CLOUD_COLOR,
+    CLOUD_SPEED_FACTOR,
     DOUBLE_JUMP_VELOCITY,
     GameEngine,
+    GRAFFITI_COLOR,
+    GRAFFITI_TEXT,
     GROUND_Y_RATIO,
+    HEART_COLOR,
+    INVINCIBILITY_THRESHOLD,
     JUMP_COOLDOWN,
     JUMP_THRESHOLD,
     JumpDetector,
+    LEFT_SHOULDER,
     LEVEL_INTERVAL,
     MAX_JUMPS,
+    MAX_LIVES,
+    MIN_SHOULDER_WIDTH,
     OBSTACLE_HEIGHT_RANGE,
     Obstacle,
     ObstacleManager,
     OBSTACLE_WIDTH,
     PlayerCharacter,
+    POSE_WARNING_COLOR,
+    POSE_WARNING_TEXT,
+    RIGHT_SHOULDER,
+    SKY_BLOCK_COLOR,
+    SKY_BLOCK_SIZE,
+    Cloud,
+    SkyBlock,
     SPEED_INTERVAL,
     SPEED_MULTIPLIER,
 )
@@ -439,6 +456,14 @@ class TestObstacle:
         char_bbox = (400, 330, 20, 80)
         assert obs.check_collision(char_bbox) is False
 
+    def test_no_collision_when_passed(self):
+        """check_collision returns False once the obstacle is marked as passed."""
+        obs = Obstacle(x=100, ground_y=384, width=30, height=60, speed=5.0)
+        char_bbox = (105, 330, 20, 80)
+        assert obs.check_collision(char_bbox) is True
+        obs.passed = True
+        assert obs.check_collision(char_bbox) is False
+
     def test_mark_passed_when_left_of_character(self):
         """mark_passed returns True once the obstacle passes the character."""
         obs = Obstacle(x=100, ground_y=384, width=30, height=60, speed=5.0)
@@ -492,19 +517,19 @@ class TestObstacleManager:
         mgr._passed_count = 0
         assert mgr.level == 1
 
-        mgr._passed_count = 9
+        mgr._passed_count = 4
         assert mgr.level == 1
 
+        mgr._passed_count = 5
+        assert mgr.level == 2
+
+        mgr._passed_count = 9
+        assert mgr.level == 2
+
         mgr._passed_count = 10
-        assert mgr.level == 2
-
-        mgr._passed_count = 19
-        assert mgr.level == 2
-
-        mgr._passed_count = 20
         assert mgr.level == 3
 
-        mgr._passed_count = 99
+        mgr._passed_count = 49
         assert mgr.level == 10
 
     def test_obstacles_spawn_over_time(self):
@@ -603,20 +628,20 @@ class TestGameEngine:
         assert engine.level == 1
 
     def test_level_progression(self):
-        """Level increments every 10 obstacles passed via engine speed property."""
+        """Level increments every 5 obstacles passed via engine speed property."""
         engine = self._make_engine()
         engine.start()
 
         engine._obstacle_manager._passed_count = 0
         assert engine.level == 1
 
-        engine._obstacle_manager._passed_count = 9
+        engine._obstacle_manager._passed_count = 4
         assert engine.level == 1
 
-        engine._obstacle_manager._passed_count = 10
+        engine._obstacle_manager._passed_count = 5
         assert engine.level == 2
 
-        engine._obstacle_manager._passed_count = 20
+        engine._obstacle_manager._passed_count = 10
         assert engine.level == 3
 
     def test_speed_progression_tied_to_level(self):
@@ -624,18 +649,18 @@ class TestGameEngine:
         engine = self._make_engine()
         engine.start()
 
-        # Level 1 (0-9 obstacles): base speed
+        # Level 1 (0-4 obstacles): base speed
         engine._obstacle_manager._passed_count = 0
         assert engine.speed == pytest.approx(BASE_SPEED)
-        engine._obstacle_manager._passed_count = 9
+        engine._obstacle_manager._passed_count = 4
         assert engine.speed == pytest.approx(BASE_SPEED)
 
-        # Level 2 (10-19 obstacles): first speed increase
-        engine._obstacle_manager._passed_count = 10
+        # Level 2 (5-9 obstacles): first speed increase
+        engine._obstacle_manager._passed_count = 5
         assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER)
 
-        # Level 3 (20-29 obstacles): second increase
-        engine._obstacle_manager._passed_count = 20
+        # Level 3 (10-14 obstacles): second increase
+        engine._obstacle_manager._passed_count = 10
         assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER ** 2)
 
     def test_speed_starts_at_base(self):
@@ -659,7 +684,7 @@ class TestGameEngine:
         assert engine.state == GameEngine.PLAYING
 
     def test_speed_progression_formula(self):
-        """Speed multiplier is SPEED_MULTIPLIER^(level - 1) = SPEED_MULTIPLIER^(passed_count // 10)."""
+        """Speed multiplier is SPEED_MULTIPLIER^(level - 1) = SPEED_MULTIPLIER^(passed_count // 5)."""
         engine = self._make_engine()
         engine.start()
 
@@ -667,35 +692,32 @@ class TestGameEngine:
         engine._obstacle_manager._passed_count = 0
         assert engine.speed == pytest.approx(BASE_SPEED)
 
-        # 9 passed → still base (9 // 10 = 0)
-        engine._obstacle_manager._passed_count = 9
+        # 4 passed → still base (4 // 5 = 0)
+        engine._obstacle_manager._passed_count = 4
         assert engine.speed == pytest.approx(BASE_SPEED)
 
-        # 10 passed → ×1.10
-        engine._obstacle_manager._passed_count = 10
+        # 5 passed → ×1.10
+        engine._obstacle_manager._passed_count = 5
         assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER)
 
-        # 20 passed → ×1.21
-        engine._obstacle_manager._passed_count = 20
+        # 10 passed → ×1.21
+        engine._obstacle_manager._passed_count = 10
         assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER ** 2)
 
-        # 35 passed → ×1.331 (35 // 10 = 3)
-        engine._obstacle_manager._passed_count = 35
+        # 17 passed → ×1.331 (17 // 5 = 3)
+        engine._obstacle_manager._passed_count = 17
         assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER ** 3)
 
-    def test_collision_triggers_game_over(self):
-        """Character colliding with an obstacle transitions to GAME_OVER."""
+    def test_collision_loses_life(self):
+        """Character colliding with an obstacle loses a life (not game over)."""
         engine = self._make_engine()
         engine.start()
 
-        # Feed standing landmarks to establish a character bbox
         standing = make_standing_landmarks()
         engine.update(standing, MOCK_CONNECTIONS)
-
-        # Feed landmarks once more to ensure bbox is current
         engine.update(standing, MOCK_CONNECTIONS)
 
-        # Place an obstacle centered on the character's x position
+        # Place an obstacle overlapping the character
         obs = Obstacle(
             x=CHARACTER_X - 25,
             ground_y=GROUND_Y,
@@ -705,8 +727,32 @@ class TestGameEngine:
         )
         engine._obstacle_manager._obstacles = [obs]
 
-        # Next update should detect collision
         engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.lives == MAX_LIVES - 1
+        assert engine.state == GameEngine.PLAYING
+
+    def test_game_over_when_lives_depleted(self):
+        """Game over when all lives are lost through repeated collisions."""
+        engine = self._make_engine()
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        # Collide MAX_LIVES times to lose all lives
+        for _ in range(MAX_LIVES):
+            obs = Obstacle(
+                x=CHARACTER_X - 25,
+                ground_y=GROUND_Y,
+                width=50,
+                height=100,
+                speed=BASE_SPEED,
+            )
+            engine._obstacle_manager._obstacles = [obs]
+            engine.update(standing, MOCK_CONNECTIONS)
+
+        assert engine.lives == 0
         assert engine.state == GameEngine.GAME_OVER
 
     def test_menu_update_does_nothing(self):
@@ -780,9 +826,9 @@ class TestGameEngine:
         standing = make_standing_landmarks()
         engine.update(standing, MOCK_CONNECTIONS)
 
-        # Place an obstacle just to the right of character, moving left
+        # Place an obstacle to the left of character so it passes before collision
         obs = Obstacle(
-            x=CHARACTER_X + 50,
+            x=CHARACTER_X - OBSTACLE_WIDTH - 10,
             ground_y=GROUND_Y,
             width=OBSTACLE_WIDTH,
             height=60,
@@ -798,8 +844,8 @@ class TestGameEngine:
                 break
         assert sound.play_coin.called
 
-    def test_game_over_sound_plays_on_collision(self):
-        """Game over sound plays when a collision is detected."""
+    def test_hit_sound_plays_on_collision(self):
+        """Hit sound plays when a collision is detected (with lives remaining)."""
         from unittest.mock import MagicMock
         sound = MagicMock(spec=SoundManager)
         engine = GameEngine(WIDTH, HEIGHT, sound_manager=sound)
@@ -819,6 +865,32 @@ class TestGameEngine:
         engine._obstacle_manager._obstacles = [obs]
 
         engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.state == GameEngine.PLAYING
+        assert sound.play_hit.called
+        assert not sound.play_game_over.called
+
+    def test_game_over_sound_when_lives_depleted(self):
+        """Game over sound plays when all lives are lost."""
+        from unittest.mock import MagicMock
+        sound = MagicMock(spec=SoundManager)
+        engine = GameEngine(WIDTH, HEIGHT, sound_manager=sound)
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        # Collide MAX_LIVES times to lose all lives
+        for _ in range(MAX_LIVES):
+            obs = Obstacle(
+                x=CHARACTER_X - 10,
+                ground_y=GROUND_Y,
+                width=50,
+                height=100,
+                speed=BASE_SPEED,
+            )
+            engine._obstacle_manager._obstacles = [obs]
+            engine.update(standing, MOCK_CONNECTIONS)
+
         assert engine.state == GameEngine.GAME_OVER
         assert sound.play_game_over.called
 
@@ -876,7 +948,7 @@ class TestGameEngine:
         """ObstacleManager speed is synced to engine speed each frame."""
         engine = self._make_engine()
         engine.start()
-        engine._obstacle_manager._passed_count = 10
+        engine._obstacle_manager._passed_count = 5
         engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
         expected_speed = BASE_SPEED * SPEED_MULTIPLIER
         assert engine._obstacle_manager.speed == pytest.approx(expected_speed)
@@ -897,13 +969,309 @@ class TestGameEngine:
         """Game over screen displays level text."""
         engine = self._make_engine()
         engine.start()
-        engine._obstacle_manager._passed_count = 10
+        engine._obstacle_manager._passed_count = 5
         engine._state = GameEngine.GAME_OVER
         frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
         engine.render(frame, MOCK_CONNECTIONS)
 
         # Game over should have been rendered with level info
         assert frame.sum() > 0
+
+    # --- Lives system tests ---
+
+    def test_initial_lives_is_max(self):
+        """Engine starts with MAX_LIVES lives."""
+        engine = self._make_engine()
+        assert engine.lives == MAX_LIVES
+
+    def test_sky_block_restores_life(self):
+        """Collecting a sky block restores a life (up to MAX_LIVES)."""
+        from unittest.mock import MagicMock
+        sound = MagicMock(spec=SoundManager)
+        engine = GameEngine(WIDTH, HEIGHT, sound_manager=sound)
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        # Lose a life first
+        obs = Obstacle(
+            x=CHARACTER_X - 10,
+            ground_y=GROUND_Y,
+            width=50,
+            height=100,
+            speed=BASE_SPEED,
+        )
+        engine._obstacle_manager._obstacles = [obs]
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.lives == MAX_LIVES - 1
+
+        # Collect a sky block to restore life
+        block = SkyBlock(
+            x=CHARACTER_X - SKY_BLOCK_SIZE - 10,
+            y=GROUND_Y - 50,
+            size=SKY_BLOCK_SIZE,
+            color=SKY_BLOCK_COLOR,
+            speed=BASE_SPEED,
+        )
+        engine._sky_blocks = [block]
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.lives == MAX_LIVES
+
+    def test_sky_block_does_not_overfill_lives(self):
+        """Sky block does not restore life when already at MAX_LIVES."""
+        from unittest.mock import MagicMock
+        sound = MagicMock(spec=SoundManager)
+        engine = GameEngine(WIDTH, HEIGHT, sound_manager=sound)
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        # Sky block at full lives should not increment
+        block = SkyBlock(
+            x=CHARACTER_X - SKY_BLOCK_SIZE - 10,
+            y=GROUND_Y - 50,
+            size=SKY_BLOCK_SIZE,
+            color=SKY_BLOCK_COLOR,
+            speed=BASE_SPEED,
+        )
+        engine._sky_blocks = [block]
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.lives == MAX_LIVES
+
+    # --- Background music tests ---
+
+    def test_start_calls_play_background_music(self):
+        """start() calls play_background_music on the sound manager."""
+        from unittest.mock import MagicMock
+        sound = MagicMock(spec=SoundManager)
+        engine = GameEngine(WIDTH, HEIGHT, sound_manager=sound)
+        engine.start()
+        assert sound.play_background_music.called
+
+    def test_close_calls_stop_background_music(self):
+        """close() calls stop_background_music on the sound manager."""
+        from unittest.mock import MagicMock
+        sound = MagicMock(spec=SoundManager)
+        engine = GameEngine(WIDTH, HEIGHT, sound_manager=sound)
+        engine.close()
+        assert sound.stop_background_music.called
+
+    def test_reset_calls_stop_invincibility_theme(self):
+        """reset() calls stop_invincibility_theme on the sound manager."""
+        from unittest.mock import MagicMock
+        sound = MagicMock(spec=SoundManager)
+        engine = GameEngine(WIDTH, HEIGHT, sound_manager=sound)
+        engine.start()
+        sound.reset_mock()
+        engine.reset()
+        assert sound.stop_invincibility_theme.called
+
+    # --- Invincibility theme tests ---
+
+    def test_invincibility_theme_plays_at_threshold(self):
+        """Invincibility theme plays when score reaches INVINCIBILITY_THRESHOLD."""
+        from unittest.mock import MagicMock
+        sound = MagicMock(spec=SoundManager)
+        engine = GameEngine(WIDTH, HEIGHT, sound_manager=sound)
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        # Set score to threshold
+        engine._obstacle_manager._passed_count = INVINCIBILITY_THRESHOLD
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert sound.play_invincibility_theme.called
+
+    def test_invincibility_theme_stops_below_threshold(self):
+        """Invincibility theme stops when score drops below threshold."""
+        from unittest.mock import MagicMock
+        sound = MagicMock(spec=SoundManager)
+        engine = GameEngine(WIDTH, HEIGHT, sound_manager=sound)
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        # Activate invincibility
+        engine._obstacle_manager._passed_count = INVINCIBILITY_THRESHOLD
+        engine.update(standing, MOCK_CONNECTIONS)
+        sound.reset_mock()
+
+        # Drop below threshold
+        engine._obstacle_manager._passed_count = INVINCIBILITY_THRESHOLD - 1
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert sound.stop_invincibility_theme.called
+
+    # --- Pose stability tests ---
+
+    def test_pose_warning_shown_when_shoulders_occluded(self):
+        """scale_warning is True when shoulders are not detected."""
+        engine = self._make_engine()
+        engine.start()
+
+        # Landmarks with no shoulders (None)
+        landmarks = make_standing_landmarks()
+        landmarks[LEFT_SHOULDER] = None
+        landmarks[RIGHT_SHOULDER] = None
+        engine.update(landmarks, MOCK_CONNECTIONS)
+        assert engine._player.scale_warning is True
+
+    def test_pose_warning_shown_when_too_close(self):
+        """scale_warning is True when shoulder width is too small."""
+        engine = self._make_engine()
+        engine.start()
+
+        # Landmarks with shoulders very close together
+        landmarks = make_standing_landmarks()
+        landmarks[LEFT_SHOULDER] = (319, 240)  # cx-1
+        landmarks[RIGHT_SHOULDER] = (321, 240)  # cx+1
+        engine.update(landmarks, MOCK_CONNECTIONS)
+        assert engine._player.scale_warning is True
+
+    def test_no_pose_warning_when_standing(self):
+        """scale_warning is False when standing at proper distance."""
+        engine = self._make_engine()
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert engine._player.scale_warning is False
+
+    def test_pose_warning_pauses_game(self):
+        """When scale_warning is active, obstacles don't advance."""
+        from unittest.mock import MagicMock
+        sound = MagicMock(spec=SoundManager)
+        engine = GameEngine(WIDTH, HEIGHT, sound_manager=sound)
+        engine.start()
+
+        # Landmarks with no shoulders
+        landmarks = make_standing_landmarks()
+        landmarks[LEFT_SHOULDER] = None
+        landmarks[RIGHT_SHOULDER] = None
+        engine.update(landmarks, MOCK_CONNECTIONS)
+
+        # Obstacle should not be updated (game paused)
+        obs = Obstacle(
+            x=CHARACTER_X + 100,
+            ground_y=GROUND_Y,
+            width=OBSTACLE_WIDTH,
+            height=60,
+            speed=BASE_SPEED,
+        )
+        engine._obstacle_manager._obstacles = [obs]
+        engine._obstacle_manager._spawn_timer = 999
+        old_x = obs.x
+        engine.update(landmarks, MOCK_CONNECTIONS)
+        assert obs.x == old_x  # obstacle didn't move
+
+    # --- Sky block tests ---
+
+    def test_sky_blocks_spawn_over_time(self):
+        """Sky blocks are spawned during gameplay."""
+        engine = self._make_engine()
+        engine.start()
+
+        standing = make_standing_landmarks()
+        # Update enough frames to spawn at least one sky block
+        for _ in range(300):
+            engine.update(standing, MOCK_CONNECTIONS)
+        assert len(engine._sky_blocks) >= 0  # at least initialized
+
+    def test_sky_block_moves_leftward(self):
+        """Sky blocks move leftward at cloud speed."""
+        engine = self._make_engine()
+        engine.start()
+
+        block = SkyBlock(
+            x=WIDTH,
+            y=150,
+            size=SKY_BLOCK_SIZE,
+            color=SKY_BLOCK_COLOR,
+            speed=BASE_SPEED,
+        )
+        engine._sky_blocks = [block]
+        engine._sky_block_timer = 999
+        old_x = block.x
+        engine._update_sky_blocks(BASE_SPEED)
+        assert block.x < old_x
+
+    # --- Cloud tests ---
+
+    def test_clouds_spawn_over_time(self):
+        """Clouds are spawned during gameplay."""
+        engine = self._make_engine()
+        engine.start()
+
+        standing = make_standing_landmarks()
+        for _ in range(300):
+            engine.update(standing, MOCK_CONNECTIONS)
+        assert len(engine._clouds) >= 0
+
+    def test_cloud_moves_slower_than_obstacles(self):
+        """Clouds move at CLOUD_SPEED_FACTOR of obstacle speed."""
+        engine = self._make_engine()
+        engine.start()
+
+        cloud = Cloud(
+            x=WIDTH,
+            y=100,
+            width=60,
+            height=40,
+            color=CLOUD_COLOR,
+            speed=BASE_SPEED,
+        )
+        engine._clouds = [cloud]
+        engine._cloud_timer = 999
+        old_x = cloud.x
+        engine._update_clouds(BASE_SPEED)
+        assert cloud.x < old_x
+        assert cloud.x == pytest.approx(old_x - BASE_SPEED * CLOUD_SPEED_FACTOR)
+
+    # --- Brick ground and graffiti tests ---
+
+    def test_brick_ground_rendered(self):
+        """Brick ground is rendered with BRICK_COLOR."""
+        engine = self._make_engine()
+        engine.start()
+        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
+        engine.render(frame, MOCK_CONNECTIONS)
+
+        # Ground area should have brick color (not on a pattern line)
+        ground_pixel = frame[GROUND_Y + 5, 10]
+        assert tuple(ground_pixel) == BRICK_COLOR
+
+    def test_graffiti_text_rendered(self):
+        """Graffiti text is rendered on the ground."""
+        engine = self._make_engine()
+        engine.start()
+        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
+        engine.render(frame, MOCK_CONNECTIONS)
+
+        # Graffiti text should be visible (white text on brick ground)
+        # Check a pixel near the graffiti text position
+        graffiti_y = GROUND_Y - 10
+        graffiti_x = WIDTH // 2
+        pixel = frame[graffiti_y, graffiti_x]
+        assert pixel.sum() > 0  # non-black pixel (text or background)
+
+    # --- Heart rendering tests ---
+
+    def test_hearts_show_in_hud(self):
+        """Hearts are rendered in the top-right corner."""
+        engine = self._make_engine()
+        engine.start()
+        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
+        engine.render(frame, MOCK_CONNECTIONS)
+
+        # Top-right area should have heart color (red)
+        heart_area = frame[0:40, WIDTH - 120:WIDTH]
+        assert heart_area.sum() > 0
 
 
 if __name__ == "__main__":

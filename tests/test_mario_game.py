@@ -13,11 +13,19 @@ from src.mario_game import (
     BASE_SPEED,
     CHARACTER_TARGET_HEIGHT,
     CHARACTER_X,
+    CLOUD_COLOR,
+    CLOUD_SPEED_FACTOR,
     DOUBLE_JUMP_VELOCITY,
+    GRAFFITI_COLOR,
+    GRAFFITI_TEXT,
     GROUND_Y_RATIO,
+    HEART_COLOR,
+    HUD_COLOR,
+    INVINCIBILITY_THRESHOLD,
     JUMP_COOLDOWN,
     JUMP_THRESHOLD,
     JumpDetector,
+    LEFT_SHOULDER,
     LEVEL_INTERVAL,
     LEVEL_SPAWN_GAP_RANGES,
     MarioCharacter,
@@ -25,14 +33,25 @@ from src.mario_game import (
     MarioObstacle,
     MarioObstacleManager,
     MAX_JUMPS,
+    MAX_LIVES,
     MAX_LEVEL,
+    MIN_SHOULDER_WIDTH,
+    OBSTACLE_TYPES,
     PIPE_WIDTH,
     PIPE_HEIGHT,
     BLOCK_WIDTH,
     BLOCK_HEIGHT,
     GOOMBA_WIDTH,
     GOOMBA_HEIGHT,
-    OBSTACLE_TYPES,
+    POSE_WARNING_COLOR,
+    POSE_WARNING_TEXT,
+    RIGHT_SHOULDER,
+    SKY_BLOCK_COLOR,
+    SKY_BLOCK_SIZE,
+    SKY_BLOCK_SPAWN_INTERVAL,
+    SKY_BLOCK_HEIGHT_RANGE,
+    SkyBlock,
+    Cloud,
     SKY_COLOR,
     SPEED_MULTIPLIER,
 )
@@ -361,6 +380,17 @@ class TestMarioObstacle:
         char_bbox = (400, 330, 20, 80)
         assert obs.check_collision(char_bbox) is False
 
+    def test_no_collision_when_passed(self):
+        """check_collision returns False once the obstacle is marked as passed."""
+        obs = MarioObstacle(
+            x=100, ground_y=384, width=40, height=80,
+            speed=5.0, obs_type="block", color=(30, 165, 200),
+        )
+        char_bbox = (105, 330, 20, 80)
+        assert obs.check_collision(char_bbox) is True
+        obs.passed = True
+        assert obs.check_collision(char_bbox) is False
+
     def test_mark_passed_when_left_of_character(self):
         """mark_passed returns True once the obstacle passes the character."""
         obs = MarioObstacle(
@@ -500,7 +530,7 @@ class TestMarioObstacleManager:
         assert mgr.check_collisions(char_bbox) is False
 
     def test_level_progression(self):
-        """Level increments every 10 obstacles passed (LEVEL_INTERVAL=10)."""
+        """Level increments every 5 obstacles passed (LEVEL_INTERVAL=5)."""
         mgr = self._make_manager()
         mgr._spawn_timer = 999
 
@@ -508,20 +538,20 @@ class TestMarioObstacleManager:
         mgr._passed_count = 0
         assert mgr.level == 1
 
-        # At 9 passed -> still level 1
-        mgr._passed_count = 9
+        # At 4 passed -> still level 1
+        mgr._passed_count = 4
         assert mgr.level == 1
 
-        # At 10 passed -> level 2
-        mgr._passed_count = 10
+        # At 5 passed -> level 2
+        mgr._passed_count = 5
         assert mgr.level == 2
 
-        # At 20 passed -> level 3
-        mgr._passed_count = 20
+        # At 10 passed -> level 3
+        mgr._passed_count = 10
         assert mgr.level == 3
 
-        # At 30 passed -> level 4
-        mgr._passed_count = 30
+        # At 15 passed -> level 4
+        mgr._passed_count = 15
         assert mgr.level == 4
 
     def test_level_caps_at_max(self):
@@ -602,24 +632,24 @@ class TestMarioGameEngine:
         assert engine.level == 1
 
     def test_speed_progression_formula(self):
-        """Speed multiplier is SPEED_MULTIPLIER^(level - 1) = SPEED_MULTIPLIER^(passed_count // 10)."""
+        """Speed multiplier is SPEED_MULTIPLIER^(level - 1) = SPEED_MULTIPLIER^(passed_count // 5)."""
         engine = self._make_engine()
         engine.start()
 
         engine._obstacle_manager._passed_count = 0
         assert engine.speed == pytest.approx(BASE_SPEED)
 
-        engine._obstacle_manager._passed_count = 9
+        engine._obstacle_manager._passed_count = 4
         assert engine.speed == pytest.approx(BASE_SPEED)
 
-        engine._obstacle_manager._passed_count = 10
+        engine._obstacle_manager._passed_count = 5
         assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER)
 
-        engine._obstacle_manager._passed_count = 20
+        engine._obstacle_manager._passed_count = 10
         assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER ** 2)
 
-    def test_collision_triggers_game_over(self):
-        """Character colliding with an obstacle transitions to GAME_OVER."""
+    def test_collision_loses_life(self):
+        """Character colliding with an obstacle loses a life (not game over)."""
         engine = self._make_engine()
         engine.start()
 
@@ -635,6 +665,28 @@ class TestMarioGameEngine:
         engine._obstacle_manager._obstacles = [obs]
 
         engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.lives == MAX_LIVES - 1
+        assert engine.state == MarioGameEngine.PLAYING
+
+    def test_game_over_when_lives_depleted(self):
+        """Game over when all lives are lost through repeated collisions."""
+        engine = self._make_engine()
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        for _ in range(MAX_LIVES):
+            obs = MarioObstacle(
+                x=CHARACTER_X - 20, ground_y=GROUND_Y,
+                width=40, height=100, speed=BASE_SPEED,
+                obs_type="block", color=(30, 165, 200),
+            )
+            engine._obstacle_manager._obstacles = [obs]
+            engine.update(standing, MOCK_CONNECTIONS)
+
+        assert engine.lives == 0
         assert engine.state == MarioGameEngine.GAME_OVER
 
     def test_menu_update_does_nothing(self):
@@ -706,7 +758,7 @@ class TestMarioGameEngine:
         assert engine._player._render_points is not None
 
     def test_background_is_sky_blue_not_black(self):
-        """Rendered playing background is sky blue, not solid black."""
+        """Rendered playing background is light sky blue, not solid black."""
         engine = self._make_engine()
         engine.start()
         frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
@@ -715,13 +767,13 @@ class TestMarioGameEngine:
 
         # The background should be sky blue (not black)
         assert frame[0, 0].sum() > 0
-        assert tuple(frame[0, 0]) == SKY_COLOR
+        assert tuple(frame[0, 0]) == (200, 230, 255)  # light sky blue (BGR)
 
-    def test_level_up_on_10_obstacles(self):
-        """Level increments to 2 after 10 obstacles passed."""
+    def test_level_up_on_5_obstacles(self):
+        """Level increments to 2 after 5 obstacles passed."""
         engine = self._make_engine()
         engine.start()
-        engine._obstacle_manager._passed_count = 10
+        engine._obstacle_manager._passed_count = 5
         assert engine.level == 2
 
     def test_spawn_gap_at_level_1_is_wide(self):
@@ -769,8 +821,8 @@ class TestMarioGameEngine:
         engine.update(standing, MOCK_CONNECTIONS)
         assert mock_sound.play_coin.called
 
-    def test_game_over_sound_plays_on_collision(self):
-        """Game-over sound plays when character collides with an obstacle."""
+    def test_hit_sound_plays_on_collision(self):
+        """Hit sound plays when a collision is detected (with lives remaining)."""
         mock_sound = MagicMock()
         engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
         engine.start()
@@ -787,6 +839,29 @@ class TestMarioGameEngine:
         engine._obstacle_manager._obstacles = [obs]
 
         engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.state == MarioGameEngine.PLAYING
+        assert engine.lives == MAX_LIVES - 1
+        assert mock_sound.play_hit.called
+
+    def test_game_over_sound_when_lives_depleted(self):
+        """Game-over sound plays when all lives are lost."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        for _ in range(MAX_LIVES):
+            obs = MarioObstacle(
+                x=CHARACTER_X - 20, ground_y=GROUND_Y,
+                width=40, height=100, speed=BASE_SPEED,
+                obs_type="block", color=(30, 165, 200),
+            )
+            engine._obstacle_manager._obstacles = [obs]
+            engine.update(standing, MOCK_CONNECTIONS)
+
         assert engine.state == MarioGameEngine.GAME_OVER
         assert mock_sound.play_game_over.called
 
@@ -819,6 +894,194 @@ class TestMarioGameEngine:
         engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
         engine.close()
         assert mock_sound.close.called
+
+    def test_close_calls_stop_background_music(self):
+        """close() calls stop_background_music on the sound manager."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.close()
+        assert mock_sound.stop_background_music.called
+
+    # --- Lives system tests ---
+
+    def test_initial_lives_is_max(self):
+        """Engine starts with MAX_LIVES lives."""
+        engine = self._make_engine()
+        assert engine.lives == MAX_LIVES
+
+    def test_sky_block_restores_life(self):
+        """Collecting a sky block restores a life (up to MAX_LIVES)."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        # Lose a life first
+        obs = MarioObstacle(
+            x=CHARACTER_X - 20, ground_y=GROUND_Y,
+            width=40, height=100, speed=BASE_SPEED,
+            obs_type="block", color=(30, 165, 200),
+        )
+        engine._obstacle_manager._obstacles = [obs]
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.lives == MAX_LIVES - 1
+
+        # Collect a sky block to restore life
+        block = SkyBlock(
+            x=CHARACTER_X - SKY_BLOCK_SIZE - 10,
+            y=GROUND_Y - 50,
+            size=SKY_BLOCK_SIZE,
+            color=SKY_BLOCK_COLOR,
+            speed=BASE_SPEED,
+        )
+        engine._sky_blocks = [block]
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.lives == MAX_LIVES
+
+    # --- Background music tests ---
+
+    def test_start_calls_play_background_music(self):
+        """start() calls play_background_music on the sound manager."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
+        assert mock_sound.play_background_music.called
+
+    def test_reset_calls_stop_invincibility_theme(self):
+        """reset() calls stop_invincibility_theme on the sound manager."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
+        mock_sound.reset_mock()
+        engine.reset()
+        assert mock_sound.stop_invincibility_theme.called
+
+    # --- Pose stability tests ---
+
+    def test_pose_warning_shown_when_shoulders_occluded(self):
+        """scale_warning is True when shoulders are not detected."""
+        engine = self._make_engine()
+        engine.start()
+
+        landmarks = make_standing_landmarks()
+        landmarks[LEFT_SHOULDER] = None
+        landmarks[RIGHT_SHOULDER] = None
+        engine.update(landmarks, MOCK_CONNECTIONS)
+        assert engine._player.scale_warning is True
+
+    def test_no_pose_warning_when_standing(self):
+        """scale_warning is False when standing at proper distance."""
+        engine = self._make_engine()
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert engine._player.scale_warning is False
+
+    def test_pose_warning_pauses_game(self):
+        """When scale_warning is active, obstacles don't advance."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
+
+        landmarks = make_standing_landmarks()
+        landmarks[LEFT_SHOULDER] = None
+        landmarks[RIGHT_SHOULDER] = None
+        engine.update(landmarks, MOCK_CONNECTIONS)
+
+        obs = MarioObstacle(
+            x=CHARACTER_X + 100, ground_y=GROUND_Y,
+            width=40, height=80, speed=BASE_SPEED,
+            obs_type="pipe", color=(0, 180, 0),
+        )
+        engine._obstacle_manager._obstacles = [obs]
+        engine._obstacle_manager._spawn_timer = 999
+        old_x = obs.x
+        engine.update(landmarks, MOCK_CONNECTIONS)
+        assert obs.x == old_x  # obstacle didn't move
+
+    # --- Sky block tests ---
+
+    def test_sky_block_moves_leftward(self):
+        """Sky blocks move leftward at cloud speed."""
+        engine = self._make_engine()
+        engine.start()
+
+        block = SkyBlock(
+            x=WIDTH, y=150,
+            size=SKY_BLOCK_SIZE, color=SKY_BLOCK_COLOR,
+            speed=BASE_SPEED,
+        )
+        engine._sky_blocks = [block]
+        engine._sky_block_timer = 999
+        old_x = block.x
+        engine._update_sky_blocks(BASE_SPEED)
+        assert block.x < old_x
+
+    # --- Cloud tests ---
+
+    def test_cloud_moves_slower_than_obstacles(self):
+        """Clouds move at CLOUD_SPEED_FACTOR of obstacle speed."""
+        engine = self._make_engine()
+        engine.start()
+
+        cloud = Cloud(
+            x=WIDTH, y=100,
+            width=60, height=40,
+            color=CLOUD_COLOR, speed=BASE_SPEED,
+        )
+        engine._clouds = [cloud]
+        engine._cloud_timer = 999
+        old_x = cloud.x
+        engine._update_clouds(BASE_SPEED)
+        assert cloud.x == pytest.approx(old_x - BASE_SPEED * CLOUD_SPEED_FACTOR)
+
+    # --- Invincibility theme tests ---
+
+    def test_invincibility_theme_plays_at_threshold(self):
+        """Invincibility theme plays when score reaches INVINCIBILITY_THRESHOLD."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        engine._obstacle_manager._passed_count = INVINCIBILITY_THRESHOLD
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert mock_sound.play_invincibility_theme.called
+
+    # --- Graffiti tests ---
+
+    def test_graffiti_text_rendered(self):
+        """Graffiti text is rendered on the ground."""
+        engine = self._make_engine()
+        engine.start()
+        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
+        engine.render(frame, MOCK_CONNECTIONS)
+
+        # Graffiti text should be visible (white text on ground)
+        graffiti_y = GROUND_Y - 10
+        graffiti_x = WIDTH // 2
+        pixel = frame[graffiti_y, graffiti_x]
+        assert pixel.sum() > 0  # non-black pixel
+
+    # --- Heart rendering tests ---
+
+    def test_hearts_show_in_hud(self):
+        """Hearts are rendered in the top-right corner."""
+        engine = self._make_engine()
+        engine.start()
+        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
+        engine.render(frame, MOCK_CONNECTIONS)
+
+        # Top-right area should have heart color (red)
+        heart_area = frame[0:40, WIDTH - 120:WIDTH]
+        assert heart_area.sum() > 0
 
 
 if __name__ == "__main__":

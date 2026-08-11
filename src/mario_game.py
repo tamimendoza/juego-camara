@@ -8,13 +8,24 @@ The player jumps by physically raising above a baseline (shoulder landmarks).
 A Mario-styled miniatura character at the bottom of the screen mirrors the
 jump pose and must clear scrolling obstacles (pipes, blocks, goombas).
 Obstacles start widely separated so players can advance through levels, with
-spacing tightening every 10 obstacles passed. Every 10 obstacles cleared, the
-player levels up; from level 2, speed increases 10% per level. Game ends on
-collision.
+spacing tightening every 5 obstacles passed. Every 5 obstacles cleared, the
+player levels up; from level 2, speed increases 10% per level.
 
 Features:
-- **Sound effects**: A coin sound plays when an obstacle is cleared; a
-  game-over sound plays on collision (via ``pygame.mixer``).
+- **Lives system**: The player has 3 lives (hearts); each collision with an
+  obstacle costs a life. Sky blocks in the sky can restore lives. The game
+  ends when all lives are lost.
+- **Background music**: GroundTheme.mp3 plays as background music during
+  gameplay. InvincibilityTheme.mp3 plays when the player has 5+ coins.
+- **Moving clouds**: Clouds drift across the sky at a slower speed than
+  obstacles for a parallax effect.
+- **Brick ground with graffiti**: The ground is rendered as orange-red bricks
+  with white graffiti text.
+- **Pose stability**: If the player is too close or too far from the camera
+  (shoulders not fully detected), the game pauses and shows a warning.
+- **Sound effects**: A coin sound plays when an obstacle is cleared; a hit
+  sound plays when the character loses a life; a game-over sound plays when
+  all lives are lost (via ``pygame.mixer``).
 - **Double jump**: The character can perform a second jump while airborne
   for extra height, capped at ``MAX_JUMPS = 2`` to keep the character on
   screen.
@@ -31,7 +42,30 @@ import cv2
 import numpy as np
 
 from .silhouette import SilhouetteDrawer, MARIO_FACE, MARIO_HAT, MARIO_HAIR, MARIO_SHIRT, MARIO_OVERALL
-from .game import JumpDetector, GRAVITY, JUMP_VELOCITY, BASE_SPEED, SPEED_MULTIPLIER
+from .game import (
+    JumpDetector,
+    GRAVITY,
+    JUMP_VELOCITY,
+    BASE_SPEED,
+    SPEED_MULTIPLIER,
+    MAX_LIVES,
+    HEART_COLOR,
+    SKY_BLOCK_SIZE,
+    SKY_BLOCK_COLOR,
+    SKY_BLOCK_SPAWN_INTERVAL,
+    SKY_BLOCK_HEIGHT_RANGE,
+    CLOUD_COLOR,
+    CLOUD_SPEED_FACTOR,
+    CLOUD_SPAWN_INTERVAL,
+    CLOUD_SIZE_RANGE,
+    POSE_WARNING_TEXT,
+    POSE_WARNING_COLOR,
+    MIN_SHOULDER_WIDTH,
+    MAX_SHOULDER_WIDTH,
+    INVINCIBILITY_THRESHOLD,
+    SkyBlock,
+    Cloud,
+)
 from .sound_manager import SoundManager
 from .utils import LandmarkPoint
 
@@ -60,7 +94,7 @@ LEFT_HIP = 23
 RIGHT_HIP = 24
 
 # --- Level / spacing constants ---
-LEVEL_INTERVAL = 10  # obstacles passed before level increments and gaps tighten
+LEVEL_INTERVAL = 5  # obstacles passed before level increments and gaps tighten
 LEVEL_SPAWN_GAP_RANGES = [
     (180, 280),  # Level 1: very spacious
     (150, 250),  # Level 2
@@ -94,6 +128,10 @@ GOOMBA_COLOR = (0, 50, 200)      # red-brown goombas (RGB 200,50,0)
 HUD_COLOR = (255, 255, 255)      # white HUD
 GAME_OVER_COLOR = (0, 0, 255)    # red game over text
 LEVEL_UP_COLOR = (0, 255, 255)   # yellow level-up text
+
+# --- Graffiti constants ---
+GRAFFITI_TEXT = "Familia Mendoza Silva"
+GRAFFITI_COLOR = (255, 255, 255)  # white graffiti
 
 # --- Static environment element positions ---
 _CLOUD_OFFSETS = [
@@ -137,6 +175,7 @@ class MarioCharacter:
 
         self._render_points: Optional[List[LandmarkPoint]] = None
         self._bbox: tuple = (0, 0, 0, 0)
+        self.scale_warning = False
 
     def jump(self) -> bool:
         """Trigger a jump, supporting a single double-jump while airborne.
@@ -157,7 +196,12 @@ class MarioCharacter:
         return True
 
     def update(self, landmarks: Optional[Sequence[LandmarkPoint]] = None) -> None:
-        """Apply gravity and update jump position."""
+        """Apply gravity and update jump position.
+
+        Also checks pose stability: if shoulders are not detected or the
+        shoulder width is outside the acceptable range, ``scale_warning``
+        is set to ``True`` so the game can pause and show a warning.
+        """
         if not self._on_ground:
             self._vy += GRAVITY
             self._jump_offset += self._vy
@@ -169,6 +213,22 @@ class MarioCharacter:
 
         if landmarks is not None:
             self._update_render_points(landmarks)
+            self._check_pose_stability(landmarks)
+        else:
+            self.scale_warning = True
+
+    def _check_pose_stability(self, landmarks: Sequence[LandmarkPoint]) -> None:
+        """Set scale_warning when shoulders are missing or too close/far."""
+        ls = landmarks[LEFT_SHOULDER] if len(landmarks) > LEFT_SHOULDER else None
+        rs = landmarks[RIGHT_SHOULDER] if len(landmarks) > RIGHT_SHOULDER else None
+        if ls is None or rs is None:
+            self.scale_warning = True
+        else:
+            shoulder_width = abs(rs[0] - ls[0])
+            if shoulder_width < MIN_SHOULDER_WIDTH or shoulder_width > MAX_SHOULDER_WIDTH:
+                self.scale_warning = True
+            else:
+                self.scale_warning = False
 
     def _update_render_points(self, landmarks: Sequence[LandmarkPoint]) -> None:
         """Scale and translate pose landmarks to miniatura position.
@@ -349,7 +409,14 @@ class MarioObstacle:
         return self.x + self.width < 0
 
     def check_collision(self, bbox: tuple) -> bool:
-        """AABB collision check. bbox = (x, y, w, h)."""
+        """AABB collision check. bbox = (x, y, w, h).
+
+        Returns ``False`` once the obstacle has been marked as passed (the
+        coin sound has already been scored), preventing the character from
+        colliding with an obstacle that has already cleared them.
+        """
+        if self.passed:
+            return False
         return self._aabb_overlap(
             (self.x, self.ground_y - self.height, self.width, self.height),
             bbox,
@@ -379,7 +446,7 @@ class MarioObstacleManager:
     """Spawns Mario-themed obstacles, tracks score, level, and controls speed.
 
     Obstacles start widely separated (level 1) and the spawn gap tightens
-    every ``LEVEL_INTERVAL`` (30) obstacles passed, up to ``MAX_LEVEL``.
+    every ``LEVEL_INTERVAL`` (5) obstacles passed, up to ``MAX_LEVEL``.
     """
 
     def __init__(
@@ -463,8 +530,16 @@ class MarioObstacleManager:
         self._obstacles.append(obs)
 
     def check_collisions(self, character_bbox: tuple) -> bool:
-        """Return True if any obstacle collides with the character bbox."""
-        return any(obs.check_collision(character_bbox) for obs in self._obstacles)
+        """Return True if any obstacle collides with the character bbox.
+
+        Removes the colliding obstacle to prevent repeated collision
+        detection across consecutive frames.
+        """
+        for i, obs in enumerate(self._obstacles):
+            if obs.check_collision(character_bbox):
+                del self._obstacles[i]
+                return True
+        return False
 
     def render(self, frame: np.ndarray) -> None:
         """Draw all obstacles."""
@@ -511,6 +586,25 @@ class MarioGameEngine:
         self._frame_count = 0
         self._level_up_timer = 0  # frames remaining for level-up overlay
 
+        # Lives system
+        self._lives = MAX_LIVES
+
+        # Sky blocks (life-restoring blocks in the sky)
+        self._sky_blocks: List[SkyBlock] = []
+        self._sky_block_timer = 0
+
+        # Moving clouds (parallax background)
+        self._clouds: List[Cloud] = []
+        self._cloud_timer = 0
+
+        # Invincibility theme state
+        self._invincibility_active = False
+
+    @property
+    def lives(self) -> int:
+        """Current number of lives remaining (0 to MAX_LIVES)."""
+        return self._lives
+
     @property
     def state(self) -> int:
         return self._state
@@ -536,9 +630,10 @@ class MarioGameEngine:
         return BASE_SPEED * multiplier
 
     def start(self) -> None:
-        """Transition to PLAYING state."""
+        """Transition to PLAYING state and start background music."""
         self.reset()
         self._state = self.PLAYING
+        self._sound_manager.play_background_music()
 
     def reset(self) -> None:
         """Reset all game state to initial values."""
@@ -548,6 +643,15 @@ class MarioGameEngine:
         self._frame_count = 0
         self._level_up_timer = 0
         self._state = self.MENU
+
+        # Reset lives, sky blocks, clouds, and invincibility
+        self._lives = MAX_LIVES
+        self._sky_blocks = []
+        self._sky_block_timer = 0
+        self._clouds = []
+        self._cloud_timer = 0
+        self._invincibility_active = False
+        self._sound_manager.stop_invincibility_theme()
 
     def update(
         self,
@@ -569,19 +673,24 @@ class MarioGameEngine:
         landmarks: Optional[Sequence[LandmarkPoint]],
         connections: Optional[Sequence[tuple]],
     ) -> None:
-        # 1. Detect jump from pose
+        # 1. Update player physics (includes pose stability check)
+        self._player.update(landmarks)
+
+        # 2. Pose stability: pause game if pose not fully detected
+        if self._player.scale_warning:
+            self._sound_manager.play_pose_warning()
+            return
+
+        # 3. Detect jump from pose
         if landmarks is not None:
             if self._jump_detector.update(landmarks):
                 self._player.jump()
 
-        # 2. Update player physics
-        self._player.update(landmarks)
-
-        # 3. Update speed based on score
+        # 4. Update speed based on score
         current_speed = self.speed
         self._obstacle_manager.set_speed(current_speed)
 
-        # 4. Update obstacles (handles level-up detection)
+        # 5. Update obstacles (handles level-up detection)
         old_level = self._obstacle_manager.level
         old_passed_count = self._obstacle_manager.passed_count
         self._obstacle_manager.update(
@@ -592,14 +701,96 @@ class MarioGameEngine:
         if self._obstacle_manager.level > old_level:
             self._level_up_timer = LEVEL_UP_DISPLAY_FRAMES
 
-        # 5. Collision check
-        if self._obstacle_manager.check_collisions(self._player.bounding_box):
-            self._state = self.GAME_OVER
-            self._sound_manager.play_game_over()
+        # 6. Update sky blocks
+        self._update_sky_blocks(current_speed)
 
-        # 6. Decrement level-up timer
+        # 7. Update clouds
+        self._update_clouds(current_speed)
+
+        # 8. Invincibility theme: play when score >= threshold
+        if self._obstacle_manager.passed_count >= INVINCIBILITY_THRESHOLD:
+            if not self._invincibility_active:
+                self._invincibility_active = True
+                self._sound_manager.play_invincibility_theme()
+        else:
+            if self._invincibility_active:
+                self._invincibility_active = False
+                self._sound_manager.stop_invincibility_theme()
+
+        # 9. Collision check - lose a life instead of immediate game over
+        if self._obstacle_manager.check_collisions(self._player.bounding_box):
+            self._lives -= 1
+            if self._lives > 0:
+                self._sound_manager.play_hit()
+            else:
+                self._sound_manager.play_game_over()
+                self._state = self.GAME_OVER
+
+        # 10. Decrement level-up timer
         if self._level_up_timer > 0:
             self._level_up_timer -= 1
+
+    def _update_sky_blocks(self, current_speed: float) -> None:
+        """Update sky blocks: move, check collisions, spawn new ones."""
+        for block in self._sky_blocks:
+            block.update()
+
+        char_bbox = self._player.bounding_box
+        for block in self._sky_blocks:
+            if not block.collected and block.check_collision(char_bbox):
+                if self._lives < MAX_LIVES:
+                    self._lives += 1
+                    self._sound_manager.play_coin()
+                block.collected = True
+
+        self._sky_blocks = [
+            b for b in self._sky_blocks
+            if not b.off_screen() and not b.collected
+        ]
+
+        self._sky_block_timer -= 1
+        if self._sky_block_timer <= 0:
+            self._spawn_sky_block(current_speed)
+            self._sky_block_timer = random.randint(*SKY_BLOCK_SPAWN_INTERVAL)
+
+    def _spawn_sky_block(self, current_speed: float) -> None:
+        """Create a new sky block at the right edge."""
+        y = random.randint(*SKY_BLOCK_HEIGHT_RANGE)
+        block = SkyBlock(
+            x=self.width,
+            y=y,
+            size=SKY_BLOCK_SIZE,
+            color=SKY_BLOCK_COLOR,
+            speed=current_speed,
+        )
+        self._sky_blocks.append(block)
+
+    def _update_clouds(self, current_speed: float) -> None:
+        """Update clouds: move and spawn new ones."""
+        for cloud in self._clouds:
+            cloud.update()
+
+        self._clouds = [c for c in self._clouds if not c.off_screen()]
+
+        self._cloud_timer -= 1
+        if self._cloud_timer <= 0:
+            self._spawn_cloud(current_speed)
+            self._cloud_timer = random.randint(*CLOUD_SPAWN_INTERVAL)
+
+    def _spawn_cloud(self, current_speed: float) -> None:
+        """Create a new cloud at the right edge."""
+        width = random.randint(*CLOUD_SIZE_RANGE)
+        height = width * 2 // 3
+        y = random.randint(40, self._ground_y // 2)
+        cloud = Cloud(
+            x=self.width,
+            y=y,
+            width=width,
+            height=height,
+            color=CLOUD_COLOR,
+            speed=current_speed,
+        )
+        self._clouds.append(cloud)
 
     def render(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
         """Render the current game state onto the frame."""
@@ -610,12 +801,9 @@ class MarioGameEngine:
         elif self._state == self.GAME_OVER:
             self._render_game_over(frame, connections)
 
-    def _render_background(self, frame: np.ndarray) -> None:
-        """Draw the Mario Bros sky, clouds, bushes, and ground."""
-        # Sky
-        frame[:] = SKY_COLOR
-
-        # Clouds
+    def _render_static_environment(self, frame: np.ndarray) -> None:
+        """Draw static clouds, bushes, and ground with graffiti (no sky fill)."""
+        # Static clouds
         for cx, cy in _CLOUD_OFFSETS:
             cv2.ellipse(frame, (cx, cy), (30, 15), 0, 0, 360, CLOUD_COLOR, -1)
             cv2.ellipse(frame, (cx - 25, cy + 5), (20, 12), 0, 0, 360, CLOUD_COLOR, -1)
@@ -629,7 +817,7 @@ class MarioGameEngine:
             # Red flower
             cv2.circle(frame, (bx, by - 4), 4, FLOWER_COLOR, -1)
 
-        # Ground (brown band with brick pattern)
+        # Ground (brown band with brick pattern and graffiti)
         ground_top = self._ground_y
         cv2.rectangle(frame, (0, ground_top), (self.width, self.height), GROUND_COLOR, -1)
         # Brick pattern
@@ -639,19 +827,55 @@ class MarioGameEngine:
             for x in range(0, self.width, brick_w):
                 cv2.rectangle(frame, (x + 2, y + 2), (x + brick_w - 2, y + brick_h - 2),
                               BRICK_STROKE, 1)
+        # Graffiti text
+        cv2.putText(
+            frame,
+            GRAFFITI_TEXT,
+            (self.width // 2 - 100, ground_top - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            GRAFFITI_COLOR,
+            1,
+            cv2.LINE_AA,
+        )
 
     def _render_game(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
-        """Render playing game: Mario background + character + obstacles + HUD."""
-        self._render_background(frame)
+        """Render playing game: sky background + clouds + sky blocks + character + obstacles + ground + HUD."""
+        # Sky blue background (de-identified, no camera feed)
+        frame[:] = (200, 230, 255)  # light sky blue (BGR)
 
-        # Render character
-        self._player.render(frame, connections)
+        # Render moving clouds (parallax background)
+        for cloud in self._clouds:
+            cloud.render(frame)
+
+        # Render sky blocks
+        for block in self._sky_blocks:
+            block.render(frame)
+
+        # Render static environment (bushes, ground with graffiti)
+        self._render_static_environment(frame)
 
         # Render obstacles
         self._obstacle_manager.render(frame)
 
-        # HUD
+        # Render character
+        self._player.render(frame, connections)
+
+        # HUD (hearts, level, score, speed)
         self._draw_hud(frame)
+
+        # Pose warning text
+        if self._player.scale_warning:
+            cv2.putText(
+                frame,
+                POSE_WARNING_TEXT,
+                (self.width // 2 - 180, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                POSE_WARNING_COLOR,
+                2,
+                cv2.LINE_AA,
+            )
 
         # Level-up overlay
         if self._level_up_timer > 0:
@@ -659,7 +883,8 @@ class MarioGameEngine:
 
     def _render_menu(self, frame: np.ndarray) -> None:
         """Render the Mario-themed menu screen."""
-        self._render_background(frame)
+        frame[:] = SKY_COLOR
+        self._render_static_environment(frame)
 
         # Darken slightly for menu overlay
         overlay = frame.copy()
@@ -730,9 +955,47 @@ class MarioGameEngine:
             cv2.FONT_HERSHEY_SIMPLEX, font_scale, LEVEL_UP_COLOR, thickness, cv2.LINE_AA,
         )
 
+    def _draw_hearts(self, frame: np.ndarray) -> None:
+        """Draw hearts for remaining lives in the top-right corner."""
+        for i in range(MAX_LIVES):
+            color = HEART_COLOR if i < self._lives else (100, 100, 100)
+            cx = self.width - 30 - i * 25
+            cy = 25
+            cv2.ellipse(
+                frame,
+                (cx, cy),
+                (10, 10),
+                0,
+                0,
+                360,
+                color,
+                -1,
+            )
+            cv2.ellipse(
+                frame,
+                (cx - 7, cy),
+                (5, 5),
+                0,
+                0,
+                360,
+                color,
+                -1,
+            )
+            cv2.ellipse(
+                frame,
+                (cx + 7, cy),
+                (5, 5),
+                0,
+                0,
+                360,
+                color,
+                -1,
+            )
+
     def _draw_hud(self, frame: np.ndarray) -> None:
-        """Draw score, level, and speed on the frame."""
+        """Draw score, level, speed, and hearts on the frame."""
         speed_mult = SPEED_MULTIPLIER ** (self._obstacle_manager.level - 1)
+        self._draw_hearts(frame)
         cv2.putText(
             frame, f"Monedas: {self.passed_count}",
             (10, 25),
@@ -760,5 +1023,6 @@ class MarioGameEngine:
             pass  # handled by caller for exit
 
     def close(self) -> None:
-        """Release sound manager resources."""
+        """Clean up resources (sound manager)."""
+        self._sound_manager.stop_background_music()
         self._sound_manager.close()

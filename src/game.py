@@ -6,9 +6,15 @@ Pipeline:
 
 The player jumps by physically raising above a baseline (detected from shoulder
 landmarks). A miniatura stick-figure character at the bottom of the screen
-mirrors the jump and must clear scrolling obstacles. Every 10 obstacles cleared,
-the player levels up. Speed increases by 10% starting from level 2. The game
-ends on collision.
+mirrors the jump and must clear scrolling obstacles. Every 5 obstacles cleared,
+the player levels up. Speed increases by 10% starting from level 2. The player
+has 3 lives (hearts); each collision with an obstacle costs a life. Sky blocks
+in the sky can restore lives. The game ends when all lives are lost.
+
+Audio:
+    GroundTheme.mp3 plays as background music during gameplay.
+    InvincibilityTheme.mp3 plays when the player has 5+ coins.
+    Background music volume is kept below sound effect volume.
 """
 
 import random
@@ -48,7 +54,39 @@ DOUBLE_JUMP_VELOCITY = -10.0
 BASE_SPEED = 4.0  # starting obstacle speed (px/frame)
 SPEED_MULTIPLIER = 1.10  # multiplied every LEVEL_INTERVAL obstacles
 SPEED_INTERVAL = 10  # obstacles passed before speed increases
-LEVEL_INTERVAL = 10  # obstacles passed before level increments
+LEVEL_INTERVAL = 5  # obstacles passed before level increments
+
+# --- Lives system constants ---
+MAX_LIVES = 3
+HEART_COLOR = (0, 0, 255)  # red hearts (BGR)
+
+# --- Sky block constants ---
+SKY_BLOCK_SIZE = 30
+SKY_BLOCK_COLOR = (0, 255, 255)  # yellow (BGR)
+SKY_BLOCK_SPEED_FACTOR = 0.5  # sky blocks move at 50% of obstacle speed
+SKY_BLOCK_SPAWN_INTERVAL = (120, 240)  # frames between sky block spawns
+SKY_BLOCK_HEIGHT_RANGE = (80, 200)  # y positions for sky blocks
+SKY_BLOCK_SIZE_RANGE = (20, 40)  # sky block sizes
+
+# --- Cloud constants ---
+CLOUD_COLOR = (255, 255, 255)  # white
+CLOUD_SPEED_FACTOR = 0.3  # clouds move at 30% of obstacle speed
+CLOUD_SPAWN_INTERVAL = (180, 300)  # frames between cloud spawns
+CLOUD_SIZE_RANGE = (40, 80)  # cloud sizes
+
+# --- Ground constants ---
+BRICK_COLOR = (0, 128, 255)  # orange-red bricks (BGR)
+GRAFFITI_TEXT = "Familia Mendoza Silva"
+GRAFFITI_COLOR = (255, 255, 255)  # white graffiti
+
+# --- Pose stability constants ---
+POSE_WARNING_TEXT = "Acerquese o alejese de la camara"
+POSE_WARNING_COLOR = (0, 0, 255)  # red warning text
+MIN_SHOULDER_WIDTH = 30
+MAX_SHOULDER_WIDTH = 400
+
+# --- Invincibility constants ---
+INVINCIBILITY_THRESHOLD = 5  # score at which invincibility theme plays
 
 # --- Obstacle constants ---
 OBSTACLE_WIDTH = 30
@@ -179,6 +217,8 @@ class PlayerCharacter:
         self._render_points: Optional[List[LandmarkPoint]] = None
         # Bounding box for collision (recomputed in _update_transform)
         self._bbox: tuple = (0, 0, 0, 0)
+        # Pose stability warning (user too close/far or shoulders not detected)
+        self.scale_warning = False
 
     def jump(self) -> bool:
         """Trigger a jump, supporting double jump while airborne."""
@@ -193,7 +233,12 @@ class PlayerCharacter:
         return True
 
     def update(self, landmarks: Optional[Sequence[LandmarkPoint]] = None) -> None:
-        """Apply gravity and update jump position."""
+        """Apply gravity and update jump position.
+
+        Also checks pose stability: if shoulders are not detected or the
+        shoulder width is outside the acceptable range, ``scale_warning``
+        is set to ``True`` so the game can pause and show a warning.
+        """
         if not self._on_ground:
             self._vy += GRAVITY
             self._jump_offset += self._vy
@@ -205,6 +250,22 @@ class PlayerCharacter:
 
         if landmarks is not None:
             self._update_render_points(landmarks)
+            self._check_pose_stability(landmarks)
+        else:
+            self.scale_warning = True
+
+    def _check_pose_stability(self, landmarks: Sequence[LandmarkPoint]) -> None:
+        """Set scale_warning when shoulders are missing or too close/far."""
+        ls = landmarks[LEFT_SHOULDER] if len(landmarks) > LEFT_SHOULDER else None
+        rs = landmarks[RIGHT_SHOULDER] if len(landmarks) > RIGHT_SHOULDER else None
+        if ls is None or rs is None:
+            self.scale_warning = True
+        else:
+            shoulder_width = abs(rs[0] - ls[0])
+            if shoulder_width < MIN_SHOULDER_WIDTH or shoulder_width > MAX_SHOULDER_WIDTH:
+                self.scale_warning = True
+            else:
+                self.scale_warning = False
 
     def _update_render_points(
         self, landmarks: Sequence[LandmarkPoint]
@@ -362,7 +423,14 @@ class Obstacle:
         return self.x + self.width < 0
 
     def check_collision(self, bbox: tuple) -> bool:
-        """AABB collision check. bbox = (x, y, w, h)."""
+        """AABB collision check. bbox = (x, y, w, h).
+
+        Returns ``False`` once the obstacle has been marked as passed (the
+        point / coin sound has already been scored), preventing the character
+        from colliding with an obstacle that has already cleared them.
+        """
+        if self.passed:
+            return False
         return self._aabb_overlap(
             (self.x, self.ground_y - self.height, self.width, self.height),
             bbox,
@@ -386,6 +454,108 @@ class Obstacle:
             self.passed = True
             return True
         return False
+
+
+class SkyBlock:
+    """A square block in the sky that grants a life when touched by the character.
+
+    Moves leftward at cloud speed (slower than obstacles for parallax effect).
+    Disappears after being collected (plays coin sound, grants +1 life).
+    """
+
+    def __init__(
+        self,
+        x: int,
+        y: int,
+        size: int = SKY_BLOCK_SIZE,
+        color: tuple = SKY_BLOCK_COLOR,
+        speed: float = BASE_SPEED,
+    ):
+        self.x = float(x)
+        self.y = y
+        self.size = size
+        self.color = color
+        self.speed = speed * CLOUD_SPEED_FACTOR
+        self.collected = False
+
+    def update(self) -> None:
+        """Move leftward at cloud speed."""
+        self.x -= self.speed
+
+    def render(self, frame: np.ndarray) -> None:
+        """Draw the sky block as a filled square."""
+        x0 = int(self.x)
+        y0 = int(self.y)
+        x1 = int(self.x + self.size)
+        y1 = int(self.y + self.size)
+        cv2.rectangle(frame, (x0, y0), (x1, y1), self.color, -1)
+        cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 0, 0), 2)
+
+    def off_screen(self) -> bool:
+        """Check if the sky block has moved completely off the left edge."""
+        return self.x + self.size < 0
+
+    def check_collision(self, bbox: tuple) -> bool:
+        """AABB collision check. bbox = (x, y, w, h)."""
+        if self.collected:
+            return False
+        block_bbox = (self.x, self.y, self.size, self.size)
+        return self._aabb_overlap(block_bbox, bbox)
+
+    @staticmethod
+    def _aabb_overlap(a: tuple, b: tuple) -> bool:
+        """Return True if two AABBs (x, y, w, h) overlap."""
+        ax, ay, aw, ah = a
+        bx, by, bw, bh = b
+        return not (
+            ax + aw < bx
+            or bx + bw < ax
+            or ay + ah < by
+            or by + bh < ay
+        )
+
+
+class Cloud:
+    """A cloud that moves leftward at a slower speed than obstacles (parallax)."""
+
+    def __init__(
+        self,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        color: tuple = CLOUD_COLOR,
+        speed: float = BASE_SPEED,
+    ):
+        self.x = float(x)
+        self.y = y
+        self.width = width
+        self.height = height
+        self.color = color
+        self.speed = speed * CLOUD_SPEED_FACTOR
+
+    def update(self) -> None:
+        """Move leftward at cloud speed."""
+        self.x -= self.speed
+
+    def render(self, frame: np.ndarray) -> None:
+        """Draw the cloud as an ellipse."""
+        cx = int(self.x + self.width / 2)
+        cy = int(self.y + self.height / 2)
+        cv2.ellipse(
+            frame,
+            (cx, cy),
+            (self.width // 2, self.height // 2),
+            0,
+            0,
+            360,
+            self.color,
+            -1,
+        )
+
+    def off_screen(self) -> bool:
+        """Check if the cloud has moved completely off the left edge."""
+        return self.x + self.width < 0
 
 
 class ObstacleManager:
@@ -459,8 +629,16 @@ class ObstacleManager:
         self._obstacles.append(obs)
 
     def check_collisions(self, character_bbox: tuple) -> bool:
-        """Return True if any obstacle collides with the character bbox."""
-        return any(obs.check_collision(character_bbox) for obs in self._obstacles)
+        """Return True if any obstacle collides with the character bbox.
+
+        Removes the colliding obstacle to prevent repeated collision
+        detection across consecutive frames.
+        """
+        for i, obs in enumerate(self._obstacles):
+            if obs.check_collision(character_bbox):
+                del self._obstacles[i]
+                return True
+        return False
 
     def render(self, frame: np.ndarray) -> None:
         """Draw all obstacles."""
@@ -498,6 +676,20 @@ class GameEngine:
         self._state = self.MENU
         self._frame_count = 0
 
+        # Lives system
+        self._lives = MAX_LIVES
+
+        # Sky blocks (life-restoring blocks in the sky)
+        self._sky_blocks: List[SkyBlock] = []
+        self._sky_block_timer = 0
+
+        # Moving clouds (parallax background)
+        self._clouds: List[Cloud] = []
+        self._cloud_timer = 0
+
+        # Invincibility theme state
+        self._invincibility_active = False
+
     @property
     def state(self) -> int:
         return self._state
@@ -513,6 +705,11 @@ class GameEngine:
         return self._obstacle_manager.passed_count
 
     @property
+    def lives(self) -> int:
+        """Current number of lives remaining (0 to MAX_LIVES)."""
+        return self._lives
+
+    @property
     def level(self) -> int:
         """Current level: increments every LEVEL_INTERVAL obstacles passed."""
         return self._obstacle_manager.level
@@ -524,9 +721,10 @@ class GameEngine:
         return BASE_SPEED * multiplier
 
     def start(self) -> None:
-        """Transition to PLAYING state."""
+        """Transition to PLAYING state and start background music."""
         self.reset()
         self._state = self.PLAYING
+        self._sound_manager.play_background_music()
 
     def reset(self) -> None:
         """Reset all game state to initial values."""
@@ -536,8 +734,18 @@ class GameEngine:
         self._frame_count = 0
         self._state = self.MENU
 
+        # Reset lives, sky blocks, clouds, and invincibility
+        self._lives = MAX_LIVES
+        self._sky_blocks = []
+        self._sky_block_timer = 0
+        self._clouds = []
+        self._cloud_timer = 0
+        self._invincibility_active = False
+        self._sound_manager.stop_invincibility_theme()
+
     def close(self) -> None:
         """Clean up resources (sound manager)."""
+        self._sound_manager.stop_background_music()
         self._sound_manager.close()
 
     def update(
@@ -560,19 +768,24 @@ class GameEngine:
         landmarks: Optional[Sequence[LandmarkPoint]],
         connections: Optional[Sequence[tuple]],
     ) -> None:
-        # 1. Detect jump from pose
+        # 1. Update player physics (includes pose stability check)
+        self._player.update(landmarks)
+
+        # 2. Pose stability: pause game if pose not fully detected
+        if self._player.scale_warning:
+            self._sound_manager.play_pose_warning()
+            return
+
+        # 3. Detect jump from pose
         if landmarks is not None:
             if self._jump_detector.update(landmarks):
                 self._player.jump()
 
-        # 2. Update player physics
-        self._player.update(landmarks)
-
-        # 3. Update speed based on score
+        # 4. Update speed based on score
         current_speed = self.speed
         self._obstacle_manager.set_speed(current_speed)
 
-        # 4. Update obstacles
+        # 5. Update obstacles
         old_passed = self._obstacle_manager.passed_count
         self._obstacle_manager.update(
             CHARACTER_X, self._player.bounding_box
@@ -580,10 +793,30 @@ class GameEngine:
         if self._obstacle_manager.passed_count > old_passed:
             self._sound_manager.play_coin()
 
-        # 5. Collision check
+        # 6. Update sky blocks
+        self._update_sky_blocks(current_speed)
+
+        # 7. Update clouds
+        self._update_clouds(current_speed)
+
+        # 8. Invincibility theme: play when score >= threshold
+        if self._obstacle_manager.passed_count >= INVINCIBILITY_THRESHOLD:
+            if not self._invincibility_active:
+                self._invincibility_active = True
+                self._sound_manager.play_invincibility_theme()
+        else:
+            if self._invincibility_active:
+                self._invincibility_active = False
+                self._sound_manager.stop_invincibility_theme()
+
+        # 9. Collision check - lose a life instead of immediate game over
         if self._obstacle_manager.check_collisions(self._player.bounding_box):
-            self._sound_manager.play_game_over()
-            self._state = self.GAME_OVER
+            self._lives -= 1
+            if self._lives > 0:
+                self._sound_manager.play_hit()
+            else:
+                self._sound_manager.play_game_over()
+                self._state = self.GAME_OVER
 
     def render(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
         """Render the current game state onto the frame."""
@@ -594,28 +827,112 @@ class GameEngine:
         elif self._state == self.GAME_OVER:
             self._render_game_over(frame, connections)
 
-    def _render_game(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
-        """Render playing game: solid background + character + obstacles + HUD."""
-        # Solid black background (de-identified, no camera feed)
-        frame[:] = 0
+    def _update_sky_blocks(self, current_speed: float) -> None:
+        """Update sky blocks: move, check collisions, spawn new ones."""
+        # Update existing sky blocks
+        for block in self._sky_blocks:
+            block.update()
 
-        # Draw ground line
-        cv2.line(
-            frame,
-            (0, self._ground_y),
-            (self.width, self._ground_y),
-            (100, 100, 100),
-            2,
+        # Check collisions with character
+        char_bbox = self._player.bounding_box
+        for block in self._sky_blocks:
+            if not block.collected and block.check_collision(char_bbox):
+                if self._lives < MAX_LIVES:
+                    self._lives += 1
+                    self._sound_manager.play_coin()
+                block.collected = True
+
+        # Remove off-screen and collected blocks
+        self._sky_blocks = [
+            b for b in self._sky_blocks
+            if not b.off_screen() and not b.collected
+        ]
+
+        # Spawn new sky blocks
+        self._sky_block_timer -= 1
+        if self._sky_block_timer <= 0:
+            self._spawn_sky_block(current_speed)
+            self._sky_block_timer = random.randint(*SKY_BLOCK_SPAWN_INTERVAL)
+
+    def _spawn_sky_block(self, current_speed: float) -> None:
+        """Create a new sky block at the right edge."""
+        y = random.randint(*SKY_BLOCK_HEIGHT_RANGE)
+        block = SkyBlock(
+            x=self.width,
+            y=y,
+            size=SKY_BLOCK_SIZE,
+            color=SKY_BLOCK_COLOR,
+            speed=current_speed,
         )
+        self._sky_blocks.append(block)
 
-        # Render character
-        self._player.render(frame, connections)
+    def _update_clouds(self, current_speed: float) -> None:
+        """Update clouds: move and spawn new ones."""
+        # Update existing clouds
+        for cloud in self._clouds:
+            cloud.update()
+
+        # Remove off-screen clouds
+        self._clouds = [c for c in self._clouds if not c.off_screen()]
+
+        # Spawn new clouds
+        self._cloud_timer -= 1
+        if self._cloud_timer <= 0:
+            self._spawn_cloud(current_speed)
+            self._cloud_timer = random.randint(*CLOUD_SPAWN_INTERVAL)
+
+    def _spawn_cloud(self, current_speed: float) -> None:
+        """Create a new cloud at the right edge."""
+        width = random.randint(*CLOUD_SIZE_RANGE)
+        height = width * 2 // 3
+        y = random.randint(40, self._ground_y // 2)
+        cloud = Cloud(
+            x=self.width,
+            y=y,
+            width=width,
+            height=height,
+            color=CLOUD_COLOR,
+            speed=current_speed,
+        )
+        self._clouds.append(cloud)
+
+    def _render_game(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
+        """Render playing game: sky background + clouds + character + obstacles + ground + HUD."""
+        # Sky blue background (de-identified, no camera feed)
+        frame[:] = (200, 230, 255)  # light sky blue (BGR)
+
+        # Render clouds (behind everything)
+        for cloud in self._clouds:
+            cloud.render(frame)
+
+        # Render sky blocks
+        for block in self._sky_blocks:
+            block.render(frame)
+
+        # Draw brick ground
+        self._draw_brick_ground(frame)
 
         # Render obstacles
         self._obstacle_manager.render(frame)
 
-        # HUD
+        # Render character
+        self._player.render(frame, connections)
+
+        # HUD (hearts, level, score, speed)
         self._draw_hud(frame)
+
+        # Pose warning text
+        if self._player.scale_warning:
+            cv2.putText(
+                frame,
+                POSE_WARNING_TEXT,
+                (self.width // 2 - 180, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                POSE_WARNING_COLOR,
+                2,
+                cv2.LINE_AA,
+            )
 
     def _render_menu(self, frame: np.ndarray) -> None:
         """Render the menu screen."""
@@ -710,9 +1027,80 @@ class GameEngine:
             cv2.LINE_AA,
         )
 
+    def _draw_brick_ground(self, frame: np.ndarray) -> None:
+        """Draw a brick-colored ground strip with graffiti text."""
+        ground_height = self.height - self._ground_y
+        cv2.rectangle(
+            frame,
+            (0, self._ground_y),
+            (self.width, self.height),
+            BRICK_COLOR,
+            -1,
+        )
+        # Brick pattern lines
+        for y in range(self._ground_y, self.height, 10):
+            cv2.line(frame, (0, y), (self.width, y), (0, 60, 130), 1)
+        for x in range(0, self.width, 20):
+            cv2.line(
+                frame,
+                (x, self._ground_y),
+                (x, self.height),
+                (0, 60, 130),
+                1,
+            )
+        # Graffiti text
+        cv2.putText(
+            frame,
+            GRAFFITI_TEXT,
+            (self.width // 2 - 100, self._ground_y - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            GRAFFITI_COLOR,
+            1,
+            cv2.LINE_AA,
+        )
+
+    def _draw_hearts(self, frame: np.ndarray) -> None:
+        """Draw hearts for remaining lives in the top-right corner."""
+        for i in range(MAX_LIVES):
+            color = HEART_COLOR if i < self._lives else (100, 100, 100)
+            cx = self.width - 30 - i * 25
+            cy = 25
+            cv2.ellipse(
+                frame,
+                (cx, cy),
+                (10, 10),
+                0,
+                0,
+                360,
+                color,
+                -1,
+            )
+            cv2.ellipse(
+                frame,
+                (cx - 7, cy),
+                (5, 5),
+                0,
+                0,
+                360,
+                color,
+                -1,
+            )
+            cv2.ellipse(
+                frame,
+                (cx + 7, cy),
+                (5, 5),
+                0,
+                0,
+                360,
+                color,
+                -1,
+            )
+
     def _draw_hud(self, frame: np.ndarray) -> None:
-        """Draw level, score, and speed multiplier on the frame."""
+        """Draw level, score, speed multiplier, and hearts on the frame."""
         speed_mult = SPEED_MULTIPLIER ** (self.level - 1)
+        self._draw_hearts(frame)
         cv2.putText(
             frame,
             f"Level: {self.level}",

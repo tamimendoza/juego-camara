@@ -35,6 +35,39 @@ from src.minecraft_game import (
     SKY_COLOR,
     SPEED_MULTIPLIER,
     GAME_OVER_COLOR,
+    # Lives system
+    MAX_LIVES,
+    HEART_COLOR,
+    # Sky blocks
+    SKY_BLOCK_SIZE,
+    SKY_BLOCK_COLOR,
+    SKY_BLOCK_SPAWN_INTERVAL,
+    SKY_BLOCK_HEIGHT_RANGE,
+    SKY_BLOCK_SPEED_FACTOR,
+    SKY_BLOCK_SIZE_RANGE,
+    SkyBlock,
+    # Clouds
+    CLOUD_COLOR,
+    CLOUD_SPEED_FACTOR,
+    CLOUD_SPAWN_INTERVAL,
+    CLOUD_SIZE_RANGE,
+    Cloud,
+    # Pose stability
+    POSE_WARNING_TEXT,
+    POSE_WARNING_COLOR,
+    MIN_SHOULDER_WIDTH,
+    MAX_SHOULDER_WIDTH,
+    LEFT_SHOULDER,
+    RIGHT_SHOULDER,
+    # Invincibility
+    INVINCIBILITY_THRESHOLD,
+    # Graffiti
+    GRAFFITI_TEXT,
+    GRAFFITI_COLOR,
+    # Brick ground
+    BRICK_COLOR,
+    # HUD
+    HUD_COLOR,
 )
 from src.sound_manager import SoundManager
 
@@ -397,6 +430,17 @@ class TestMinecraftObstacle:
         char_bbox = (400, 330, 20, 80)
         assert obs.check_collision(char_bbox) is False
 
+    def test_no_collision_when_passed(self):
+        """check_collision returns False once the obstacle is marked as passed."""
+        obs = MinecraftObstacle(
+            x=100, ground_y=384, width=40, height=80,
+            speed=5.0, obs_type="block", color=(30, 165, 200),
+        )
+        char_bbox = (105, 330, 20, 80)
+        assert obs.check_collision(char_bbox) is True
+        obs.passed = True
+        assert obs.check_collision(char_bbox) is False
+
     def test_mark_passed_when_left_of_character(self):
         """mark_passed returns True once the obstacle passes the character."""
         obs = MinecraftObstacle(
@@ -530,23 +574,23 @@ class TestMinecraftObstacleManager:
         assert mgr.check_collisions(char_bbox) is False
 
     def test_level_progression(self):
-        """Level increments every 10 obstacles passed (LEVEL_INTERVAL=10)."""
+        """Level increments every 5 obstacles passed (LEVEL_INTERVAL=5)."""
         mgr = self._make_manager()
         mgr._spawn_timer = 999
 
         mgr._passed_count = 0
         assert mgr.level == 1
 
-        mgr._passed_count = 9
+        mgr._passed_count = 4
         assert mgr.level == 1
 
-        mgr._passed_count = 10
+        mgr._passed_count = 5
         assert mgr.level == 2
 
-        mgr._passed_count = 20
+        mgr._passed_count = 10
         assert mgr.level == 3
 
-        mgr._passed_count = 30
+        mgr._passed_count = 15
         assert mgr.level == 4
 
     def test_level_caps_at_max(self):
@@ -627,21 +671,24 @@ class TestMinecraftGameEngine:
         assert engine.level == 1
 
     def test_speed_progression_formula(self):
-        """Speed multiplier is SPEED_MULTIPLIER^(level - 1) = SPEED_MULTIPLIER^(passed_count // 10)."""
+        """Speed multiplier is SPEED_MULTIPLIER^(level - 1) = SPEED_MULTIPLIER^(passed_count // 5)."""
         engine = self._make_engine()
         engine.start()
 
         engine._obstacle_manager._passed_count = 0
         assert engine.speed == pytest.approx(BASE_SPEED)
 
-        engine._obstacle_manager._passed_count = 10
+        engine._obstacle_manager._passed_count = 4
+        assert engine.speed == pytest.approx(BASE_SPEED)
+
+        engine._obstacle_manager._passed_count = 5
         assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER)
 
-        engine._obstacle_manager._passed_count = 20
+        engine._obstacle_manager._passed_count = 10
         assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER ** 2)
 
-    def test_collision_triggers_game_over(self):
-        """Character colliding with an obstacle transitions to GAME_OVER."""
+    def test_collision_loses_life(self):
+        """Character colliding with an obstacle loses a life (not game over)."""
         engine = self._make_engine()
         engine.start()
 
@@ -657,6 +704,27 @@ class TestMinecraftGameEngine:
         engine._obstacle_manager._obstacles = [obs]
 
         engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.lives == MAX_LIVES - 1
+        assert engine.state == MinecraftGameEngine.PLAYING
+
+    def test_game_over_when_lives_depleted(self):
+        """Game over when all lives are lost through repeated collisions."""
+        engine = self._make_engine()
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        for _ in range(MAX_LIVES):
+            obs = MinecraftObstacle(
+                x=CHARACTER_X - 20, ground_y=GROUND_Y,
+                width=40, height=100, speed=BASE_SPEED,
+                obs_type="block", color=(30, 165, 200),
+            )
+            engine._obstacle_manager._obstacles = [obs]
+            engine.update(standing, MOCK_CONNECTIONS)
+
         assert engine.state == MinecraftGameEngine.GAME_OVER
 
     def test_menu_update_does_nothing(self):
@@ -722,23 +790,20 @@ class TestMinecraftGameEngine:
         standing = make_standing_landmarks()
         engine.update(standing, MOCK_CONNECTIONS)
 
+        # Place an obstacle that will pass the character
         obs = MinecraftObstacle(
-            x=CHARACTER_X + 50, ground_y=GROUND_Y,
+            x=CHARACTER_X - 40 - 10, ground_y=GROUND_Y,
             width=40, height=80, speed=BASE_SPEED,
             obs_type="pipe", color=(0, 180, 0),
         )
         engine._obstacle_manager._obstacles = [obs]
         engine._obstacle_manager._spawn_timer = 999
 
-        # Update until the obstacle passes the character
-        for _ in range(50):
-            engine.update(standing, MOCK_CONNECTIONS)
-            if sound.play_coin.called:
-                break
+        engine.update(standing, MOCK_CONNECTIONS)
         assert sound.play_coin.called
 
-    def test_game_over_sound_plays_on_collision(self):
-        """Game over sound plays when a collision is detected."""
+    def test_hit_sound_plays_on_collision(self):
+        """Hit sound plays when a collision is detected (with lives remaining)."""
         from unittest.mock import MagicMock
         sound = MagicMock(spec=SoundManager)
         engine = MinecraftGameEngine(WIDTH, HEIGHT, sound_manager=sound)
@@ -746,15 +811,40 @@ class TestMinecraftGameEngine:
 
         standing = make_standing_landmarks()
         engine.update(standing, MOCK_CONNECTIONS)
+        engine.update(standing, MOCK_CONNECTIONS)
 
         obs = MinecraftObstacle(
-            x=CHARACTER_X - 10, ground_y=GROUND_Y,
-            width=40, height=80, speed=BASE_SPEED,
+            x=CHARACTER_X - 20, ground_y=GROUND_Y,
+            width=40, height=100, speed=BASE_SPEED,
             obs_type="block", color=(30, 165, 200),
         )
         engine._obstacle_manager._obstacles = [obs]
 
         engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.state == MinecraftGameEngine.PLAYING
+        assert engine.lives == MAX_LIVES - 1
+        assert sound.play_hit.called
+
+    def test_game_over_sound_when_lives_depleted(self):
+        """Game-over sound plays when all lives are lost."""
+        from unittest.mock import MagicMock
+        sound = MagicMock(spec=SoundManager)
+        engine = MinecraftGameEngine(WIDTH, HEIGHT, sound_manager=sound)
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        for _ in range(MAX_LIVES):
+            obs = MinecraftObstacle(
+                x=CHARACTER_X - 20, ground_y=GROUND_Y,
+                width=40, height=100, speed=BASE_SPEED,
+                obs_type="block", color=(30, 165, 200),
+            )
+            engine._obstacle_manager._obstacles = [obs]
+            engine.update(standing, MOCK_CONNECTIONS)
+
         assert engine.state == MinecraftGameEngine.GAME_OVER
         assert sound.play_game_over.called
 
@@ -834,11 +924,11 @@ class TestMinecraftGameEngine:
         ground_pixel = tuple(frame[engine._ground_y, 310])
         assert ground_pixel in (GRASS_COLOR, DIRT_COLOR, (20, 20, 20))
 
-    def test_level_up_on_10_obstacles(self):
-        """Level increments to 2 after 10 obstacles passed."""
+    def test_level_up_on_5_obstacles(self):
+        """Level increments to 2 after 5 obstacles passed."""
         engine = self._make_engine()
         engine.start()
-        engine._obstacle_manager._passed_count = 10
+        engine._obstacle_manager._passed_count = 5
         assert engine.level == 2
 
     def test_spawn_gap_at_level_1_is_wide(self):

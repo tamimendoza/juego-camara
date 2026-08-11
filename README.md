@@ -59,8 +59,10 @@ ls /dev/video*
 
 A mini-game mode where a small character ("miniatura") must jump over an
 endless stream of obstacles. The player jumps by **physically jumping** in front
-of the webcam — the shoulder landmarks detect the upward movement. Every 10
-obstacles cleared, the speed increases by 10%. The game ends on collision.
+of the webcam — the shoulder landmarks detect the upward movement. Every 5
+obstacles cleared, the speed increases by 10%. The player has 3 lives (hearts);
+each collision with an obstacle costs a life. Sky blocks in the sky can restore
+lives. The game ends when all lives are lost.
 
 ### Launch
 
@@ -95,11 +97,11 @@ are tracked for jump detection.
 
 ### Level & Speed Progression
 
-Every 10 obstacles cleared, the player levels up. Level 1 (0–9 obstacles) has
+Every 5 obstacles cleared, the player levels up. Level 1 (0–4 obstacles) has
 base speed; from level 2 onward, speed increases by 10% per level:
 
 ```
-level = (passed_obstacles // 10) + 1
+level = (passed_obstacles // 5) + 1
 speed = 4.0 × 1.10^(level - 1)
 ```
 
@@ -110,7 +112,7 @@ rendered as a Mario-styled miniatura character (red cap, peach face, red shirt,
 blue overalls) that mimics the player's pose and jump. The level features a
 sky-blue background with clouds, bushes, and brick ground. Obstacles (pipes,
 blocks, goombas) start widely separated so players can advance through levels,
-with spacing tightening every 10 obstacles passed. Every 10 obstacles cleared,
+with spacing tightening every 5 obstacles passed. Every 5 obstacles cleared,
 the player levels up; from level 2, speed increases 10% per level.
 
 ### Launch
@@ -137,6 +139,21 @@ landmark transformation, just like the base jump game.
 - `SPACE` — Start game (from menu) / restart (after game over)
 - `q` or `ESC` — Quit
 
+### Features
+
+- **Lives system**: The player has 3 lives (hearts) rendered in the top-right
+  corner. Each collision with an obstacle costs a life. Sky blocks floating in
+  the sky can restore lives when collected. The game ends when all lives are lost.
+- **Background music**: A ground theme plays as background music during gameplay.
+  An invincibility theme plays when the player reaches 5+ coins. Background music
+  volume is kept below sound effect volume.
+- **Moving clouds**: Clouds drift across the sky at a slower speed than obstacles,
+  creating a parallax effect.
+- **Brick ground**: The ground is rendered with a brick pattern and graffiti text.
+- **Pose stability**: If the player moves too close to or too far from the camera
+  (shoulders too wide or too narrow), a warning is shown and the game pauses until
+  the pose returns to an acceptable range.
+
 ### Sound Effects
 
 The Mario game plays audio feedback using `pygame.mixer`:
@@ -151,17 +168,17 @@ silently without errors.
 
 ### Level Progression
 
-Every 10 obstacles cleared, the player levels up. Obstacles start very spread
+Every 5 obstacles cleared, the player levels up. Obstacles start very spread
 out and tighten with each level:
 
 | Level | Obstacles to reach | Spawn gap range (frames) |
 |-------|-------------------|-------------------------|
 | 1     | 0                 | 180–280                 |
-| 2     | 10                | 150–250                 |
-| 3     | 20                | 130–230                 |
-| 4     | 30                | 110–200                 |
-| 5     | 40                | 90–170                  |
-| 6+    | 50+               | 70–130                  |
+| 2     | 5                 | 150–250                 |
+| 3     | 10                | 130–230                 |
+| 4     | 15                | 110–200                 |
+| 5     | 20                | 90–170                  |
+| 6+    | 25+               | 70–130                  |
 
 In addition, game speed increases by ×1.10 from level 2 onward (same as
 the base jump game).
@@ -183,8 +200,8 @@ color palette (red cap, peach face, red shirt, blue overalls) with pixel eyes.
 The level features a sky-blue background with pixel-style clouds and a
 grass-block ground band (green top, brown dirt). Obstacles (pipes, blocks,
 goombas) are rendered as voxel rectangles and start widely separated so players
-can advance through levels, with spacing tightening every 10 obstacles passed.
-Every 10 obstacles cleared, the player levels up; from level 2, speed increases
+can advance through levels, with spacing tightening every 5 obstacles passed.
+Every 5 obstacles cleared, the player levels up; from level 2, speed increases
 10% per level.
 
 ### Launch
@@ -212,17 +229,17 @@ block.
 
 ### Level Progression
 
-Same as the Mario Bros Game — every 10 obstacles cleared, the player levels
+Same as the Mario Bros Game — every 5 obstacles cleared, the player levels
 up; obstacles start very spread out and tighten with each level:
 
 | Level | Obstacles to reach | Spawn gap range (frames) |
 |-------|-------------------|-------------------------|
 | 1     | 0                 | 180–280                 |
-| 2     | 10                | 150–250                 |
-| 3     | 20                | 130–230                 |
-| 4     | 30                | 110–200                 |
-| 5     | 40                | 90–170                  |
-| 6+    | 50+               | 70–130                  |
+| 2     | 5                 | 150–250                 |
+| 3     | 10                | 130–230                 |
+| 4     | 15                | 110–200                 |
+| 5     | 20                | 90–170                  |
+| 6+    | 25+               | 70–130                  |
 
 In addition, game speed increases by ×1.10 from level 2 onward (same as
 the base jump game).
