@@ -1,15 +1,12 @@
 # mario-bros-variant Specification
 
 ## Purpose
-
 A Mario Bros-themed variant of the pose-controlled jumping game. The player's
 pose (detected via webcam) is rendered as a Mario-styled miniatura character
 that must jump over scrolling Mario Bros obstacles (pipes, blocks, goombas).
 Obstacles start widely separated so players can advance through levels, with
 difficulty increasing progressively.
-
 ## Requirements
-
 ### Requirement: Game startup and camera capture
 
 The Mario Bros game SHALL open the webcam and display a themed menu screen
@@ -198,3 +195,4 @@ The system SHALL display on-screen information during gameplay.
 - **WHEN** the game is PLAYING
 - **THEN** the system overlays the current score (obstacles passed), current
   level, and the current speed multiplier on the frame in the top-left corner
+

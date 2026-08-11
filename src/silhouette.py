@@ -285,6 +285,46 @@ class SilhouetteDrawer:
             cv2.line(frame, p1, p2, color, max(self.line_thickness + 1, 3))
 
     # ------------------------------------------------------------------
+    # Layer 3b: Face overlay rendering (real face crop)
+    # ------------------------------------------------------------------
+
+    def draw_face_overlay(
+        self,
+        frame: np.ndarray,
+        points: Sequence[LandmarkPoint],
+        face_image: Optional[np.ndarray] = None,
+        face_mask: Optional[np.ndarray] = None,
+    ) -> None:
+        """Overlay a cropped real face onto the character's head position.
+
+        Uses the nose landmark (index 0) from PoseLandmarker as the head center
+        and shoulder width (indices 11/12) to determine the head radius — same
+        positioning logic as ``draw_mario_head``. The face_image is blended onto
+        the frame using face_mask as an alpha channel.
+
+        If face_image or face_mask is None, falls back to drawing a peach face
+        circle (same as ``draw_mario_head``) so the character is always visible.
+        """
+        nose = points[0] if len(points) > 0 else None
+        ls = points[11] if len(points) > 11 else None
+        rs = points[12] if len(points) > 12 else None
+        if nose is None or ls is None or rs is None:
+            return
+
+        shoulder_width = (
+            (ls[0] - rs[0]) ** 2 + (ls[1] - rs[1]) ** 2
+        ) ** 0.5
+        radius = max(int(shoulder_width * 0.25), 10)
+
+        if face_image is not None and face_mask is not None:
+            from .face_crop import FaceCropper
+            cropper = FaceCropper()
+            cropper.overlay_face(frame, face_image, face_mask, nose, radius)
+        else:
+            # Fallback: peach face circle
+            cv2.circle(frame, nose, radius, MARIO_FACE, -1)
+
+    # ------------------------------------------------------------------
     # Layer 4: Minecraft voxel-style rendering
     # ------------------------------------------------------------------
 
@@ -459,6 +499,8 @@ class SilhouetteDrawer:
         mask_binary: Optional[np.ndarray] = None,
         connections: Optional[List[tuple]] = None,
         styles: Optional[List[str]] = None,
+        face_image: Optional[np.ndarray] = None,
+        face_mask: Optional[np.ndarray] = None,
     ) -> None:
         """Render the full character on the frame.
 
@@ -473,9 +515,10 @@ class SilhouetteDrawer:
         8. "body_lines" — connection lines for body landmarks only (indices >= 11)
         9. "mario_head" — Mario-style head (peach face circle + red cap + brown hair)
         10. "mario_body" — Mario outfit lines (red shirt for arms/torus, blue overalls for legs)
-        11. "minecraft_head" — Minecraft voxel head (square block: red cap top + peach face
+        11. "face_overlay" — real face crop overlaid at nose position (replaces head)
+        12. "minecraft_head" — Minecraft voxel head (square block: red cap top + peach face
             bottom + pixel eyes)
-        12. "minecraft_body" — Minecraft voxel body (red/blue oriented rectangles for limbs)
+        13. "minecraft_body" — Minecraft voxel body (red/blue oriented rectangles for limbs)
         """
         if styles is None:
             styles = ["mask", "polygons", "skeleton", "joints"]
@@ -510,6 +553,9 @@ class SilhouetteDrawer:
 
         if "mario_body" in styles and connections is not None:
             self.draw_mario_body(frame, points, connections)
+
+        if "face_overlay" in styles:
+            self.draw_face_overlay(frame, points, face_image, face_mask)
 
         if "minecraft_head" in styles:
             self.draw_minecraft_head(frame, points)

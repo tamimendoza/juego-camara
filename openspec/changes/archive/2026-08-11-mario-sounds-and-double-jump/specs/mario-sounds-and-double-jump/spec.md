@@ -57,7 +57,7 @@ airborne, reaching a higher apex, with a maximum of 2 jumps per airtime.
 - **THEN** `_jump_count` is reset to 0
 - **AND** `_on_ground` is set to `True`
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Pose-based jump detection
 

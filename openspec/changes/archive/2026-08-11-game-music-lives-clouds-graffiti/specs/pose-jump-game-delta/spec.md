@@ -4,7 +4,7 @@ Delta for the existing pose-jump-game spec: level interval changes from 10 to 5,
 plus new requirements for lives, sky blocks, clouds, ground, graffiti, music,
 invincibility theme, and pose stability.
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Speed progression
 

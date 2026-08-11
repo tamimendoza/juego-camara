@@ -244,6 +244,58 @@ up; obstacles start very spread out and tighten with each level:
 In addition, game speed increases by ×1.10 from level 2 onward (same as
 the base jump game).
 
+## Mario Face Game
+
+A Mario Bros-themed variant where the player's **real face** (captured from the
+webcam via MediaPipe FaceMesh) replaces the Mario character's head entirely.
+The character's body still mimics the player's pose and jump via PoseLandmarker
+body landmarks (red shirt for arms/torso, blue overalls for legs), but the head
+is a real face crop instead of a peach face circle + cap + hair arc. When FaceMesh
+fails to detect a face, the character falls back to the standard Mario head.
+
+### Launch
+
+```bash
+./run_mario_face.sh
+```
+
+Or:
+
+```bash
+python3 -m src.mario_face_main
+```
+
+The game uses a themed background (no camera feed) and renders the character as
+a small Mario-styled figure whose head is replaced by the player's real face,
+cropped from the camera feed using MediaPipe FaceMesh face contour landmarks.
+
+### Controls
+
+- Physically **jump** to make Mario jump and clear obstacles
+- **Double jump**: Jump a second time while airborne to reach a higher apex
+  (maximum 2 jumps per airtime)
+- `SPACE` — Start game (from menu) / restart (after game over)
+- `q` or `ESC` — Quit
+
+### How it works
+
+1. **Camera capture** — OpenCV reads frames from the webcam via V4L2
+2. **Pose detection** — MediaPipe PoseLandmarker detects body landmarks (33 points)
+3. **Face detection** — MediaPipe FaceMesh runs in parallel, detecting 468 face
+   landmarks per frame (no separate model file needed — the model is bundled with
+   mediapipe)
+4. **Face cropping** — The face region is cropped from the BGR camera frame using
+   FaceMesh face contour landmarks, producing a circular face image with alpha mask
+5. **Character rendering** — The face crop is overlaid at the character's nose
+   landmark position, replacing the Mario head circle
+
+### Face Detection Fallback
+
+When FaceMesh cannot detect a face (e.g., face too small or occluded), the
+character automatically falls back to rendering the standard Mario head (peach
+face circle + red cap + brown hair arc). Pose-based jump detection continues to
+work via PoseLandmarker.
+
 ## Controls
 
 - `q` — Quit the application

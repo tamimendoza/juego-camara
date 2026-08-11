@@ -1,5 +1,6 @@
 """Unit tests for SilhouetteDrawer rendering methods."""
 
+import cv2
 import numpy as np
 import pytest
 
@@ -567,3 +568,183 @@ class TestDrawOrientedRect:
         # Border should be visible at the edges of the rectangle
         assert tuple(frame[95, 100]) == (20, 20, 20) or \
                tuple(frame[105, 100]) == (20, 20, 20)
+
+
+class TestDrawFaceOverlay:
+    def test_draws_face_image_at_nose(self):
+        """Face overlay places the face crop centered at the nose landmark."""
+        from src.silhouette import MARIO_SHIRT
+
+        drawer = SilhouetteDrawer()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        points = [None] * 33
+        points[0] = (320, 240)   # nose
+        points[11] = (280, 300)  # left shoulder
+        points[12] = (360, 300)  # right shoulder
+
+        # shoulder_width = 80, radius = max(80*0.25, 10) = 20
+        face_img = np.full((40, 40, 3), (100, 150, 200), dtype=np.uint8)
+        face_mask = np.zeros((40, 40), dtype=np.uint8)
+        cv2.circle(face_mask, (20, 20), 20, 255, -1)
+
+        drawer.draw_face_overlay(frame, points, face_img, face_mask)
+
+        # The face center pixel should now show the face image color
+        assert tuple(frame[240, 320]) == (100, 150, 200)
+
+    def test_falls_back_to_peach_face_circle_when_no_face(self):
+        """When face_image is None, falls back to peach face circle."""
+        from src.silhouette import MARIO_FACE
+
+        drawer = SilhouetteDrawer()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        points = [None] * 33
+        points[0] = (320, 240)   # nose
+        points[11] = (280, 300)  # left shoulder
+        points[12] = (360, 300)  # right shoulder
+
+        drawer.draw_face_overlay(frame, points, face_image=None, face_mask=None)
+
+        # Should draw peach face circle at nose
+        assert tuple(frame[240, 320]) == MARIO_FACE
+
+    def test_falls_back_to_peach_face_circle_when_no_mask(self):
+        """When face_mask is None but face_image exists, falls back to peach circle."""
+        from src.silhouette import MARIO_FACE
+
+        drawer = SilhouetteDrawer()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        points = [None] * 33
+        points[0] = (320, 240)
+        points[11] = (280, 300)
+        points[12] = (360, 300)
+
+        face_img = np.full((40, 40, 3), (100, 150, 200), dtype=np.uint8)
+        drawer.draw_face_overlay(frame, points, face_img, face_mask=None)
+
+        assert tuple(frame[240, 320]) == MARIO_FACE
+
+    def test_does_not_draw_when_nose_missing(self):
+        """No face overlay drawn if nose (index 0) is None."""
+        drawer = SilhouetteDrawer()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        points = [None] * 33
+        points[11] = (280, 300)
+        points[12] = (360, 300)
+
+        face_img = np.full((40, 40, 3), (100, 150, 200), dtype=np.uint8)
+        face_mask = np.zeros((40, 40), dtype=np.uint8)
+        cv2.circle(face_mask, (20, 20), 20, 255, -1)
+
+        drawer.draw_face_overlay(frame, points, face_img, face_mask)
+        assert frame.sum() == 0
+
+    def test_does_not_draw_when_shoulder_missing(self):
+        """No face overlay drawn if either shoulder is None."""
+        drawer = SilhouetteDrawer()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        points = [None] * 33
+        points[0] = (320, 240)
+
+        face_img = np.full((40, 40, 3), (100, 150, 200), dtype=np.uint8)
+        face_mask = np.zeros((40, 40), dtype=np.uint8)
+        cv2.circle(face_mask, (20, 20), 20, 255, -1)
+
+        drawer.draw_face_overlay(frame, points, face_img, face_mask)
+        assert frame.sum() == 0
+
+    def test_face_overlay_resizes_to_shoulder_radius(self):
+        """Face image is resized to match the shoulder-based head radius."""
+        drawer = SilhouetteDrawer()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        points = [None] * 33
+        points[0] = (320, 240)
+        points[11] = (240, 300)  # shoulder_width = 160, radius = 40
+        points[12] = (400, 300)
+
+        # Small face image that should be resized up to 80x80 (radius 40)
+        face_img = np.full((10, 10, 3), (50, 100, 150), dtype=np.uint8)
+        face_mask = np.full((10, 10), 255, dtype=np.uint8)
+
+        drawer.draw_face_overlay(frame, points, face_img, face_mask)
+
+        # Center pixel should be the face color (resized up)
+        assert tuple(frame[240, 320]) == (50, 100, 150)
+
+
+class TestRenderCharacterFaceOverlayStyle:
+    def test_face_overlay_style_draws_face_image(self):
+        """render_character with 'face_overlay' style overlays the face image."""
+        drawer = SilhouetteDrawer()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        points = [None] * 33
+        points[0] = (320, 240)
+        points[11] = (280, 300)
+        points[12] = (360, 300)
+        points[14] = (360, 340)  # right elbow (body line)
+        connections = [(11, 12), (12, 14)]
+
+        face_img = np.full((40, 40, 3), (100, 150, 200), dtype=np.uint8)
+        face_mask = np.zeros((40, 40), dtype=np.uint8)
+        cv2.circle(face_mask, (20, 20), 20, 255, -1)
+
+        drawer.render_character(
+            frame, points, connections=connections,
+            styles=["mario_body", "face_overlay"],
+            face_image=face_img, face_mask=face_mask,
+        )
+
+        # Face overlay should be drawn at the nose position
+        assert tuple(frame[240, 320]) == (100, 150, 200)
+        # Body line should also be drawn (red shirt)
+        from src.silhouette import MARIO_SHIRT
+        assert tuple(frame[300, 320]) == MARIO_SHIRT
+
+    def test_face_overlay_style_without_face_falls_back(self):
+        """render_character with 'face_overlay' but no face image draws peach fallback."""
+        from src.silhouette import MARIO_FACE
+
+        drawer = SilhouetteDrawer()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        points = [None] * 33
+        points[0] = (320, 240)
+        points[11] = (280, 300)
+        points[12] = (360, 300)
+        connections = [(11, 12)]
+
+        drawer.render_character(
+            frame, points, connections=connections,
+            styles=["mario_body", "face_overlay"],
+        )
+
+        # Should fall back to peach face circle at the nose
+        assert tuple(frame[240, 320]) == MARIO_FACE
+
+    def test_face_overlay_with_body_lines_excludes_face_connections(self):
+        """Face connections are not drawn as skeleton lines in face_overlay mode."""
+        drawer = SilhouetteDrawer()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        points = [None] * 33
+        points[0] = (320, 240)   # nose (center of face circle, radius=20)
+        points[1] = (320, 200)   # left eye inner (above face circle)
+        points[11] = (280, 300)  # left shoulder
+        points[12] = (360, 300)  # right shoulder
+        connections = [(0, 1), (11, 12)]  # face connection + body connection
+
+        face_img = np.full((40, 40, 3), (100, 150, 200), dtype=np.uint8)
+        face_mask = np.zeros((40, 40), dtype=np.uint8)
+        cv2.circle(face_mask, (20, 20), 20, 255, -1)
+
+        drawer.render_character(
+            frame, points, connections=connections,
+            styles=["mario_body", "face_overlay"],
+            face_image=face_img, face_mask=face_mask,
+        )
+
+        # Face connection (0,1) should NOT be drawn as a skeleton line.
+        # Point (320, 210) is on the line from (320,240) to (320,200) but
+        # outside the face circle (radius 20 from nose at 240), so it should
+        # be zero if face connections are properly excluded.
+        assert frame[210, 320].sum() == 0
+        # Body connection (11,12) SHOULD be drawn
+        assert frame[300, 320].sum() > 0

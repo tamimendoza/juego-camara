@@ -31,10 +31,10 @@ At level 1 (0–9 obstacles) speed remains at `BASE_SPEED`. At level 2 (10–19
 obstacles) speed is multiplied by 1.10. Each subsequent level applies another
 1.10 multiplier.
 
-#### Scenario: Speed increases after level 2
+#### Scenario: Speed increases after 10 obstacles
 
 - **WHEN** the player reaches level 2 (10 obstacles passed) without collision
-- **THEN** the game speed is `BASE_SPEED * 1.10`
+- **THEN** the game speed is `BASE_SPEED * SPEED_MULTIPLIER^(level - 1)` = `BASE_SPEED * 1.10`
 - **AND** existing obstacles adopt the new speed immediately
 - **AND** new obstacles spawn at the new speed
 
@@ -47,7 +47,7 @@ obstacles) speed is multiplied by 1.10. Each subsequent level applies another
 
 The system SHALL display on-screen information during gameplay.
 
-#### Scenario: Score, level, and speed shown during play
+#### Scenario: Score and speed shown during play
 
 - **WHEN** the game is PLAYING
 - **THEN** the system overlays the current level, score (obstacles passed), and
