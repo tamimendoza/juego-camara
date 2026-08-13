@@ -8,7 +8,7 @@ using mock landmark data and numpy arrays for frames.
 import numpy as np
 import pytest
 
-from src.game import (
+from src.framework.jump_game import (
     BASE_SPEED,
     BRICK_COLOR,
     CHARACTER_TARGET_HEIGHT,
@@ -45,7 +45,7 @@ from src.game import (
     SPEED_INTERVAL,
     SPEED_MULTIPLIER,
 )
-from src.sound_manager import SoundManager
+from src.core.sound_manager import SoundManager
 
 
 # --- Helpers -----------------------------------------------------------------

@@ -1,20 +1,22 @@
-"""Endless pose-controlled jumping game module.
+"""Reusable 2D pose-jump game framework.
 
-Pipeline:
-    camera.read_frame → BGR→RGB conversion → mp.Image → PoseLandmarker.detect →
-    landmark extraction → GameEngine.update → GameEngine.render → display with OpenCV
+This module is the base building block for every pose-controlled jump game
+in the project. It provides:
 
-The player jumps by physically raising above a baseline (detected from shoulder
-landmarks). A miniatura stick-figure character at the bottom of the screen
-mirrors the jump and must clear scrolling obstacles. Every 5 obstacles cleared,
-the player levels up. Speed increases by 10% starting from level 2. The player
-has 3 lives (hearts); each collision with an obstacle costs a life. Sky blocks
-in the sky can restore lives. The game ends when all lives are lost.
+- ``JumpDetector`` — detects a physical jump from pose landmarks.
+- Physics and tuning constants (gravity, velocities, speeds, lives, sky
+  blocks, clouds, pose stability).
+- ``PlayerCharacter`` — a miniatura character with jump physics driven by
+  pose landmarks.
+- ``Obstacle`` / ``ObstacleManager``, ``SkyBlock`` and ``Cloud`` — the
+  scrolling entities shared by every game.
+- ``GameEngine`` — a complete base engine (MENU/PLAYING/GAME_OVER states,
+  lives, coins, sky blocks, clouds, invincibility theme, HUD, keyboard
+  handling) that games can reuse or extend.
 
-Audio:
-    GroundTheme.mp3 plays as background music during gameplay.
-    InvincibilityTheme.mp3 plays when the player has 5+ coins.
-    Background music volume is kept below sound effect volume.
+To create a new 2D game, add a package under ``src/games/<name>/`` and build
+your engine on top of these pieces (see ``src/games/mario/`` for a worked
+example).
 """
 
 import math
@@ -25,10 +27,10 @@ from typing import List, Optional, Sequence
 import cv2
 import numpy as np
 
-from .character import mirror_points
-from .silhouette import SilhouetteDrawer
-from .sound_manager import SoundManager
-from .utils import LandmarkPoint
+from ..core.character import mirror_points
+from ..core.silhouette import SilhouetteDrawer
+from ..core.sound_manager import SoundManager
+from ..core.utils import LandmarkPoint
 
 WINDOW_NAME = "Juego Camara - Mini Juego"
 RESOLUTION = (640, 480)

@@ -1,75 +1,60 @@
-"""Unit tests for the Minecraft-style Mario Bros game.
+"""Unit tests for the Mario Bros pose-controlled jumping game.
 
-Tests cover MinecraftMarioCharacter, MinecraftObstacle, MinecraftObstacleManager,
-and MinecraftGameEngine logic. All tests run without a camera or model file by
+Tests cover MarioCharacter, MarioObstacle, MarioObstacleManager, and
+MarioGameEngine logic. All tests run without a camera or model file by
 using mock landmark data and numpy arrays for frames.
 """
 
 import numpy as np
 import pytest
+from unittest.mock import MagicMock
 
-from src.minecraft_game import (
+from src.games.mario.mario_game import (
     BASE_SPEED,
     CHARACTER_TARGET_HEIGHT,
     CHARACTER_X,
+    CLOUD_COLOR,
+    CLOUD_SPEED_FACTOR,
     DOUBLE_JUMP_VELOCITY,
+    GRAFFITI_COLOR,
+    GRAFFITI_TEXT,
     GROUND_Y_RATIO,
+    HEART_COLOR,
+    HUD_COLOR,
+    INVINCIBILITY_THRESHOLD,
     JUMP_COOLDOWN,
     JUMP_THRESHOLD,
     JumpDetector,
+    LEFT_SHOULDER,
     LEVEL_INTERVAL,
     LEVEL_SPAWN_GAP_RANGES,
-    MinecraftMarioCharacter,
-    MinecraftGameEngine,
-    MinecraftObstacle,
-    MinecraftObstacleManager,
+    MarioCharacter,
+    MarioGameEngine,
+    MarioObstacle,
+    MarioObstacleManager,
     MAX_JUMPS,
+    MAX_LIVES,
     MAX_LEVEL,
+    MIN_SHOULDER_WIDTH,
+    OBSTACLE_TYPES,
     PIPE_WIDTH,
     PIPE_HEIGHT,
     BLOCK_WIDTH,
     BLOCK_HEIGHT,
     GOOMBA_WIDTH,
     GOOMBA_HEIGHT,
-    OBSTACLE_TYPES,
-    SKY_COLOR,
-    SPEED_MULTIPLIER,
-    GAME_OVER_COLOR,
-    # Lives system
-    MAX_LIVES,
-    HEART_COLOR,
-    # Sky blocks
-    SKY_BLOCK_SIZE,
+    POSE_WARNING_COLOR,
+    POSE_WARNING_TEXT,
+    RIGHT_SHOULDER,
     SKY_BLOCK_COLOR,
+    SKY_BLOCK_SIZE,
     SKY_BLOCK_SPAWN_INTERVAL,
     SKY_BLOCK_HEIGHT_RANGE,
-    SKY_BLOCK_SPEED_FACTOR,
-    SKY_BLOCK_SIZE_RANGE,
     SkyBlock,
-    # Clouds
-    CLOUD_COLOR,
-    CLOUD_SPEED_FACTOR,
-    CLOUD_SPAWN_INTERVAL,
-    CLOUD_SIZE_RANGE,
     Cloud,
-    # Pose stability
-    POSE_WARNING_TEXT,
-    POSE_WARNING_COLOR,
-    MIN_SHOULDER_WIDTH,
-    MAX_SHOULDER_WIDTH,
-    LEFT_SHOULDER,
-    RIGHT_SHOULDER,
-    # Invincibility
-    INVINCIBILITY_THRESHOLD,
-    # Graffiti
-    GRAFFITI_TEXT,
-    GRAFFITI_COLOR,
-    # Brick ground
-    BRICK_COLOR,
-    # HUD
-    HUD_COLOR,
+    SKY_COLOR,
+    SPEED_MULTIPLIER,
 )
-from src.sound_manager import SoundManager
 
 
 # --- Helpers -----------------------------------------------------------------
@@ -79,7 +64,7 @@ GROUND_Y = int(HEIGHT * GROUND_Y_RATIO)
 
 # A small subset of real MediaPipe POSE_CONNECTIONS for rendering tests
 MOCK_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 4),  # face (excluded from body rendering)
+    (0, 1), (1, 2), (2, 3), (3, 4),  # face (excluded from body_lines)
     (11, 12),  # shoulders
     (11, 13), (13, 15), (15, 16), (16, 18),  # left arm
     (12, 14), (14, 16),  # right arm
@@ -133,11 +118,12 @@ def make_jumping_landmarks(jump_height=80):
     return make_landmarks(shoulder_y=240 - jump_height)
 
 
-# --- MinecraftMarioCharacter Tests ----------------------------------------------------
+# --- MarioCharacter Tests ----------------------------------------------------
 
-class TestMinecraftMarioCharacter:
+
+class TestMarioCharacter:
     def _make_character(self, ground_y=GROUND_Y):
-        return MinecraftMarioCharacter(CHARACTER_X, ground_y)
+        return MarioCharacter(CHARACTER_X, ground_y)
 
     def test_initial_state_on_ground(self):
         """Character starts on the ground at rest."""
@@ -152,28 +138,92 @@ class TestMinecraftMarioCharacter:
         assert jumped is True
         assert char.on_ground is False
 
-    def test_third_jump_fails_when_airborne(self):
-        """jump() returns False on the third attempt (max 2 jumps)."""
-        char = self._make_character()
-        char.jump()  # first jump
-        char.jump()  # double jump (second)
-        jumped = char.jump()  # third — should fail
-        assert jumped is False
-
     def test_double_jump_succeeds_while_airborne(self):
-        """Second jump() succeeds while airborne (double jump)."""
+        """Second jump while airborne succeeds (double jump)."""
         char = self._make_character()
         char.jump()  # first jump
         jumped = char.jump()  # double jump
         assert jumped is True
+        assert char._jump_count == 2
+
+    def test_third_jump_prevented(self):
+        """Third jump while airborne is prevented (MAX_JUMPS = 2)."""
+        char = self._make_character()
+        char.jump()  # first jump
+        char.jump()  # double jump
+        jumped = char.jump()  # third jump - should fail
+        assert jumped is False
+        assert char._jump_count == 2
 
     def test_double_jump_applies_additional_velocity(self):
-        """Double jump applies DOUBLE_JUMP_VELOCITY on top of current velocity."""
+        """Double jump applies DOUBLE_JUMP_VELOCITY boost to current velocity."""
         char = self._make_character()
         char.jump()  # first jump: vy = JUMP_VELOCITY
         vy_after_first = char._vy
         char.jump()  # double jump: vy += DOUBLE_JUMP_VELOCITY
         assert char._vy == pytest.approx(vy_after_first + DOUBLE_JUMP_VELOCITY)
+
+    def test_jump_count_resets_on_landing(self):
+        """Jump count resets to 0 when character returns to ground."""
+        char = self._make_character()
+        char.jump()
+        char.jump()  # double jump
+        assert char._jump_count == 2
+
+        # Simulate landing
+        char._jump_offset = 0.0
+        char._vy = 0.0
+        char._on_ground = True
+        char._jump_count = 0
+        char.update()  # should keep jump_count at 0 (already on ground)
+
+        # After landing, first jump should work again
+        assert char._jump_count == 0
+
+    def test_jump_count_resets_after_full_jump_cycle(self):
+        """After a full jump and fall, jump count resets for next jump."""
+        char = self._make_character()
+        char.jump()  # first jump
+        char.jump()  # double jump
+        assert char._jump_count == 2
+
+        # Update until character lands
+        frames = 0
+        while not char.on_ground and frames < 200:
+            char.update()
+            frames += 1
+
+        assert char.on_ground is True
+        assert char._jump_count == 0
+
+    def test_double_jump_reaches_higher_apex(self):
+        """Double jump reaches a higher apex than single jump."""
+        # Single jump
+        char1 = self._make_character()
+        char1.jump()
+        apex1 = 0.0
+        frames = 0
+        while not char1.on_ground and frames < 200:
+            char1.update()
+            apex1 = min(apex1, char1._jump_offset)
+            frames += 1
+
+        # Double jump (jump again at apex)
+        char2 = self._make_character()
+        char2.jump()
+        # Wait until near apex (vy close to 0)
+        for _ in range(20):
+            char2.update()
+        char2.jump()  # double jump
+        apex2 = 0.0
+        frames = 0
+        while not char2.on_ground and frames < 200:
+            char2.update()
+            apex2 = min(apex2, char2._jump_offset)
+            frames += 1
+
+        # Double jump apex should be more negative (higher)
+        assert apex2 < apex1
 
     def test_gravity_returns_to_ground(self):
         """After jumping, gravity pulls the character back to ground."""
@@ -207,8 +257,8 @@ class TestMinecraftMarioCharacter:
         assert bx >= 0
         assert by >= 0
 
-    def test_character_size_with_default_pose(self):
-        """With default mock landmarks, the transformed character is visible."""
+    def test_pose_scaled_to_target_height(self):
+        """Transformed landmarks fit within CHARACTER_TARGET_HEIGHT."""
         char = self._make_character(ground_y=384)
         lands = make_landmarks(
             shoulder_y=240, nose_y=120, hip_y=300, ankle_y=380
@@ -222,92 +272,7 @@ class TestMinecraftMarioCharacter:
         ankle = render_points[29]
         if nose is not None and ankle is not None:
             char_height = abs(ankle[1] - nose[1])
-            assert 60 < char_height < 140
-
-    def test_character_does_not_enlarge_with_compacted_pose(self):
-        """Compacted pose (small height, same shoulder width) does not enlarge."""
-        standing = make_standing_landmarks()
-
-        # Normal full-body detection
-        char_normal = self._make_character(ground_y=384)
-        char_normal.update(standing)
-        pts_normal = char_normal._render_points
-        assert pts_normal is not None
-        normal_height = abs(pts_normal[29][1] - pts_normal[0][1])
-
-        # Compacted pose: shoulders stay at same x (width unchanged) but body
-        # height is compressed vertically relative to shoulder y.
-        small = list(standing)
-        ref_y = 220  # shoulder y in mock
-        for i in range(33):
-            if small[i] is not None:
-                dy = small[i][1] - ref_y
-                small[i] = (small[i][0], int(ref_y + dy * 0.5))
-
-        char_small = self._make_character(ground_y=384)
-        char_small.update(small)
-        pts_small = char_small._render_points
-        assert pts_small is not None
-        small_height = abs(pts_small[29][1] - pts_small[0][1])
-
-        # Compacted pose should NOT be enlarged beyond normal height
-        assert small_height <= normal_height
-
-    def test_character_remains_still_when_detection_lost(self):
-        """When landmarks lost, the character keeps its last known pose."""
-        char = self._make_character(ground_y=384)
-
-        char.update(make_standing_landmarks())
-        pts_after_pose = char._render_points
-        assert pts_after_pose is not None
-        bbox_after_pose = char.bounding_box
-
-        lost = [None] * 33
-        char.update(lost)
-
-        # _render_points retains the last known pose (character stays "quieto")
-        assert char._render_points is not None
-        assert char.bounding_box == bbox_after_pose
-
-    def test_scale_warning_false_with_normal_pose(self):
-        """No warning when shoulder width is in acceptable range."""
-        char = self._make_character(ground_y=384)
-        char.update(make_standing_landmarks())
-        assert char.scale_warning is False
-
-    def test_scale_warning_true_when_too_close(self):
-        """Warning set when shoulders are too far apart (user too close to camera)."""
-        char = self._make_character(ground_y=384)
-        lands = make_standing_landmarks()
-        # Make shoulders very wide (user too close)
-        lands[11] = (50, 220)   # left shoulder — far left
-        lands[12] = (600, 220)  # right shoulder — far right (550px apart)
-        char.update(lands)
-        assert char.scale_warning is True
-
-    def test_scale_warning_true_when_too_far(self):
-        """Warning set when shoulders are too close together (user too far)."""
-        char = self._make_character(ground_y=384)
-        lands = make_standing_landmarks()
-        # Make shoulders very narrow (user too far)
-        lands[11] = (315, 220)  # left shoulder
-        lands[12] = (325, 220)  # right shoulder — only 10px apart (< MIN_SHOULDER_WIDTH=30)
-        char.update(lands)
-        assert char.scale_warning is True
-
-    def test_scale_warning_clears_when_re_entry_valid(self):
-        """Warning clears when shoulder width returns to acceptable range."""
-        char = self._make_character(ground_y=384)
-        # First: too far
-        far = make_standing_landmarks()
-        far[11] = (315, 220)
-        far[12] = (325, 220)
-        char.update(far)
-        assert char.scale_warning is True
-
-        # Now: normal distance
-        char.update(make_standing_landmarks())
-        assert char.scale_warning is False
+            assert 50 < char_height < 120
 
     def test_render_does_not_crash(self):
         """render() on a blank frame does not raise."""
@@ -324,32 +289,17 @@ class TestMinecraftMarioCharacter:
         char.render(frame, MOCK_CONNECTIONS)
         assert frame is not None
 
-    def test_render_with_pose_draws_minecraft_colors(self):
-        """Character rendered with pose draws Minecraft colors (face, cap, shirt)."""
-        from src.silhouette import MARIO_FACE, MARIO_HAT, MARIO_SHIRT
+    def test_render_with_pose_draws_mario_colors(self):
+        """Character rendered with pose draws Mario colors (face, cap, shirt)."""
+        from src.core.silhouette import MARIO_FACE, MARIO_HAT, MARIO_SHIRT, MARIO_OVERALL
 
         char = self._make_character(ground_y=384)
         char.update(make_standing_landmarks())
         frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
         char.render(frame, MOCK_CONNECTIONS)
 
+        # Should have drawn SOMETHING (not all black)
         assert frame.sum() > 0
-        # Should have peach face pixels
-        face_pixels = np.all(frame == np.array(MARIO_FACE).reshape(1, 1, 3), axis=2)
-        assert face_pixels.sum() > 0
-        # Should have red pixels (cap/shirt)
-        red_pixels = np.all(frame == np.array(MARIO_HAT).reshape(1, 1, 3), axis=2)
-        assert red_pixels.sum() > 0
-
-    def test_render_fallback_draws_when_no_pose(self):
-        """render() without pose draws a fallback static Minecraft Mario."""
-        from src.silhouette import MARIO_FACE, MARIO_HAT, MARIO_SHIRT
-
-        char = self._make_character()
-        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
-        char.render(frame, MOCK_CONNECTIONS)
-
-        assert frame.sum() > 0  # fallback should have drawn something
 
     def test_reset_returns_to_ground(self):
         """reset() puts the character back on the ground at rest."""
@@ -387,12 +337,12 @@ class TestMinecraftMarioCharacter:
         assert abs(apex) > 120
 
 
-# --- MinecraftObstacle Tests -----------------------------------------------------
+# --- MarioObstacle Tests -----------------------------------------------------
 
-class TestMinecraftObstacle:
+class TestMarioObstacle:
     def test_movement_leftward(self):
         """update() moves the obstacle leftward by speed."""
-        obs = MinecraftObstacle(
+        obs = MarioObstacle(
             x=300, ground_y=384, width=40, height=80,
             speed=5.0, obs_type="pipe", color=(0, 180, 0),
         )
@@ -404,17 +354,17 @@ class TestMinecraftObstacle:
 
     def test_off_screen(self):
         """off_screen() returns True when the obstacle clears the left edge."""
-        obs = MinecraftObstacle(
+        obs = MarioObstacle(
             x=10, ground_y=384, width=40, height=80,
             speed=5.0, obs_type="goomba", color=(0, 50, 200),
         )
         assert obs.off_screen() is False
-        obs.x = -41
+        obs.x = -41  # x + width = -1 < 0
         assert obs.off_screen() is True
 
     def test_collision_when_overlapping(self):
         """check_collision returns True when bboxes overlap."""
-        obs = MinecraftObstacle(
+        obs = MarioObstacle(
             x=100, ground_y=384, width=40, height=80,
             speed=5.0, obs_type="block", color=(30, 165, 200),
         )
@@ -423,7 +373,7 @@ class TestMinecraftObstacle:
 
     def test_no_collision_when_separated(self):
         """check_collision returns False when bboxes are far apart."""
-        obs = MinecraftObstacle(
+        obs = MarioObstacle(
             x=100, ground_y=384, width=40, height=80,
             speed=5.0, obs_type="pipe", color=(0, 180, 0),
         )
@@ -432,7 +382,7 @@ class TestMinecraftObstacle:
 
     def test_no_collision_when_passed(self):
         """check_collision returns False once the obstacle is marked as passed."""
-        obs = MinecraftObstacle(
+        obs = MarioObstacle(
             x=100, ground_y=384, width=40, height=80,
             speed=5.0, obs_type="block", color=(30, 165, 200),
         )
@@ -443,22 +393,28 @@ class TestMinecraftObstacle:
 
     def test_mark_passed_when_left_of_character(self):
         """mark_passed returns True once the obstacle passes the character."""
-        obs = MinecraftObstacle(
+        obs = MarioObstacle(
             x=80, ground_y=384, width=40, height=80,
             speed=5.0, obs_type="pipe", color=(0, 180, 0),
         )
         char_x = 80
 
-        assert obs.mark_passed(char_x) is False
-        obs.x = 45
-        assert obs.mark_passed(char_x) is False
-        obs.x = 40
-        assert obs.mark_passed(char_x) is False
-        obs.x = 35
-        assert obs.mark_passed(char_x) is True
+        # x=80, right edge=120 > 80 → not yet passed
         assert obs.mark_passed(char_x) is False
 
-    def test_render_draws_all_types_without_crash(self):
+        obs.x = 45  # right edge = 85, not yet past
+        assert obs.mark_passed(char_x) is False
+
+        obs.x = 40  # right edge = 80, not yet past
+        assert obs.mark_passed(char_x) is False
+
+        obs.x = 35  # right edge = 75 < 80
+        assert obs.mark_passed(char_x) is True
+
+        # Already passed, won't fire again
+        assert obs.mark_passed(char_x) is False
+
+    def test_render_does_not_crash(self):
         """render() draws all obstacle types without errors."""
         types_and_colors = [
             ("pipe", (0, 180, 0)),
@@ -467,7 +423,7 @@ class TestMinecraftObstacle:
         ]
         for obs_type, color in types_and_colors:
             frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
-            obs = MinecraftObstacle(
+            obs = MarioObstacle(
                 x=100, ground_y=384, width=40, height=80,
                 speed=5.0, obs_type=obs_type, color=color,
             )
@@ -479,11 +435,11 @@ class TestMinecraftObstacle:
         assert set(OBSTACLE_TYPES) == {"pipe", "block", "goomba"}
 
 
-# --- MinecraftObstacleManager Tests ----------------------------------------------
+# --- MarioObstacleManager Tests ----------------------------------------------
 
-class TestMinecraftObstacleManager:
+class TestMarioObstacleManager:
     def _make_manager(self, base_speed=BASE_SPEED):
-        return MinecraftObstacleManager(WIDTH, GROUND_Y, base_speed=base_speed)
+        return MarioObstacleManager(WIDTH, GROUND_Y, base_speed=base_speed)
 
     def test_initial_state(self):
         """New manager has no obstacles and level 1."""
@@ -497,20 +453,20 @@ class TestMinecraftObstacleManager:
         mgr = self._make_manager()
         gap_range = mgr.spawn_gap_range
         assert gap_range == LEVEL_SPAWN_GAP_RANGES[0]
-        assert gap_range[0] >= 100
+        assert gap_range[0] >= 100  # Much wider than existing game's 40
 
     def test_obstacles_spawn_over_time(self):
         """Obstacles are spawned as the spawn timer counts down."""
         mgr = self._make_manager()
-        mgr._spawn_timer = 0
+        mgr._spawn_timer = 0  # force immediate spawn
         mgr.update(CHARACTER_X, (0, 0, 0, 0))
         assert len(mgr._obstacles) >= 1
 
     def test_passed_count_increments(self):
         """passed_count increments when an obstacle passes the character."""
         mgr = self._make_manager()
-        mgr._spawn_timer = 999
-        obs = MinecraftObstacle(
+        mgr._spawn_timer = 999  # prevent spawning during test
+        obs = MarioObstacle(
             x=CHARACTER_X - 40 - 10, ground_y=GROUND_Y,
             width=40, height=80, speed=BASE_SPEED,
             obs_type="pipe", color=(0, 180, 0),
@@ -523,8 +479,8 @@ class TestMinecraftObstacleManager:
     def test_off_screen_obstacles_removed(self):
         """Obstacles that scroll off-screen are removed."""
         mgr = self._make_manager()
-        mgr._spawn_timer = 999
-        obs = MinecraftObstacle(
+        mgr._spawn_timer = 999  # prevent spawning
+        obs = MarioObstacle(
             x=-100, ground_y=GROUND_Y, width=40, height=80,
             speed=5.0, obs_type="goomba", color=(0, 50, 200),
         )
@@ -535,11 +491,11 @@ class TestMinecraftObstacleManager:
     def test_set_speed_updates_existing_obstacles(self):
         """set_speed() propagates to all existing obstacles."""
         mgr = self._make_manager()
-        obs1 = MinecraftObstacle(
+        obs1 = MarioObstacle(
             x=100, ground_y=GROUND_Y, width=40, height=80,
             speed=4.0, obs_type="pipe", color=(0, 180, 0),
         )
-        obs2 = MinecraftObstacle(
+        obs2 = MarioObstacle(
             x=200, ground_y=GROUND_Y, width=30, height=30,
             speed=4.0, obs_type="goomba", color=(0, 50, 200),
         )
@@ -553,7 +509,7 @@ class TestMinecraftObstacleManager:
     def test_check_collisions_returns_true_on_overlap(self):
         """check_collisions returns True when any obstacle overlaps."""
         mgr = self._make_manager()
-        obs = MinecraftObstacle(
+        obs = MarioObstacle(
             x=CHARACTER_X - 10, ground_y=GROUND_Y,
             width=40, height=80, speed=BASE_SPEED,
             obs_type="block", color=(30, 165, 200),
@@ -565,7 +521,7 @@ class TestMinecraftObstacleManager:
     def test_check_collisions_returns_false_when_clear(self):
         """check_collisions returns False when no obstacles overlap."""
         mgr = self._make_manager()
-        obs = MinecraftObstacle(
+        obs = MarioObstacle(
             x=WIDTH - 100, ground_y=GROUND_Y, width=40, height=80,
             speed=BASE_SPEED, obs_type="pipe", color=(0, 180, 0),
         )
@@ -578,18 +534,23 @@ class TestMinecraftObstacleManager:
         mgr = self._make_manager()
         mgr._spawn_timer = 999
 
+        # At 0 passed -> level 1
         mgr._passed_count = 0
         assert mgr.level == 1
 
+        # At 4 passed -> still level 1
         mgr._passed_count = 4
         assert mgr.level == 1
 
+        # At 5 passed -> level 2
         mgr._passed_count = 5
         assert mgr.level == 2
 
+        # At 10 passed -> level 3
         mgr._passed_count = 10
         assert mgr.level == 3
 
+        # At 15 passed -> level 4
         mgr._passed_count = 15
         assert mgr.level == 4
 
@@ -627,8 +588,8 @@ class TestMinecraftObstacleManager:
         mgr = self._make_manager()
         mgr._passed_count = 50  # level 6
         mgr._obstacles = [
-            MinecraftObstacle(x=100, ground_y=GROUND_Y, width=40, height=80,
-                              speed=5.0, obs_type="pipe", color=(0, 180, 0))
+            MarioObstacle(x=100, ground_y=GROUND_Y, width=40, height=80,
+                          speed=5.0, obs_type="pipe", color=(0, 180, 0))
         ]
         mgr.reset()
         assert len(mgr._obstacles) == 0
@@ -636,16 +597,16 @@ class TestMinecraftObstacleManager:
         assert mgr.level == 1
 
 
-# --- MinecraftGameEngine Tests ---------------------------------------------------
+# --- MarioGameEngine Tests ---------------------------------------------------
 
-class TestMinecraftGameEngine:
+class TestMarioGameEngine:
     def _make_engine(self):
-        return MinecraftGameEngine(WIDTH, HEIGHT)
+        return MarioGameEngine(WIDTH, HEIGHT)
 
     def test_initial_state_is_menu(self):
         """Engine starts in MENU state."""
         engine = self._make_engine()
-        assert engine.state == MinecraftGameEngine.MENU
+        assert engine.state == MarioGameEngine.MENU
         assert engine.state_name == "MENU"
         assert engine.passed_count == 0
         assert engine.level == 1
@@ -659,15 +620,15 @@ class TestMinecraftGameEngine:
         """handle_key(SPACE) from MENU starts the game."""
         engine = self._make_engine()
         engine.handle_key(ord(" "))
-        assert engine.state == MinecraftGameEngine.PLAYING
+        assert engine.state == MarioGameEngine.PLAYING
 
     def test_reset_from_game_over_to_playing(self):
         """handle_key(SPACE) from GAME_OVER restarts the game."""
         engine = self._make_engine()
         engine.start()
-        engine._state = MinecraftGameEngine.GAME_OVER
+        engine._state = MarioGameEngine.GAME_OVER
         engine.handle_key(ord(" "))
-        assert engine.state == MinecraftGameEngine.PLAYING
+        assert engine.state == MarioGameEngine.PLAYING
         assert engine.level == 1
 
     def test_speed_progression_formula(self):
@@ -696,7 +657,7 @@ class TestMinecraftGameEngine:
         engine.update(standing, MOCK_CONNECTIONS)
         engine.update(standing, MOCK_CONNECTIONS)
 
-        obs = MinecraftObstacle(
+        obs = MarioObstacle(
             x=CHARACTER_X - 20, ground_y=GROUND_Y,
             width=40, height=100, speed=BASE_SPEED,
             obs_type="block", color=(30, 165, 200),
@@ -705,7 +666,7 @@ class TestMinecraftGameEngine:
 
         engine.update(standing, MOCK_CONNECTIONS)
         assert engine.lives == MAX_LIVES - 1
-        assert engine.state == MinecraftGameEngine.PLAYING
+        assert engine.state == MarioGameEngine.PLAYING
 
     def test_game_over_when_lives_depleted(self):
         """Game over when all lives are lost through repeated collisions."""
@@ -717,7 +678,7 @@ class TestMinecraftGameEngine:
         engine.update(standing, MOCK_CONNECTIONS)
 
         for _ in range(MAX_LIVES):
-            obs = MinecraftObstacle(
+            obs = MarioObstacle(
                 x=CHARACTER_X - 20, ground_y=GROUND_Y,
                 width=40, height=100, speed=BASE_SPEED,
                 obs_type="block", color=(30, 165, 200),
@@ -725,49 +686,25 @@ class TestMinecraftGameEngine:
             engine._obstacle_manager._obstacles = [obs]
             engine.update(standing, MOCK_CONNECTIONS)
 
-        assert engine.state == MinecraftGameEngine.GAME_OVER
-
-    def test_character_arms_point_forward_like_player_mirror(self):
-        """The miniatura character mirrors the player so arms point forward.
-
-        When the player points both hands forward (toward their physical right,
-        which is the image-LEFT on a non-flipped camera), the character's arms
-        must point FORWARD (image-right, along the character's path) — not be
-        rendered in reverse.
-        """
-        engine = self._make_engine()
-        engine.start()
-
-        landmarks = make_standing_landmarks()
-        landmarks[11] = (440, 300)
-        landmarks[12] = (200, 300)
-        landmarks[13] = (400, 320)
-        landmarks[15] = (360, 350)
-        landmarks[14] = (170, 320)
-        landmarks[16] = (100, 350)
-
-        engine.update(landmarks, MOCK_CONNECTIONS)
-        rp = engine._player._render_points
-        assert rp is not None
-        assert rp[15][0] > rp[11][0], "left arm should point forward (image-right)"
-        assert rp[16][0] > rp[12][0], "right arm should point forward (image-right)"
+        assert engine.lives == 0
+        assert engine.state == MarioGameEngine.GAME_OVER
 
     def test_menu_update_does_nothing(self):
         """In MENU state, update() does not spawn obstacles."""
         engine = self._make_engine()
         engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
-        assert engine.state == MinecraftGameEngine.MENU
+        assert engine.state == MarioGameEngine.MENU
         assert engine.passed_count == 0
 
     def test_game_over_update_frozen(self):
         """In GAME_OVER state, update() does not change score or state."""
         engine = self._make_engine()
         engine.start()
-        engine._state = MinecraftGameEngine.GAME_OVER
+        engine._state = MarioGameEngine.GAME_OVER
 
         standing = make_standing_landmarks()
         engine.update(standing, MOCK_CONNECTIONS)
-        assert engine.state == MinecraftGameEngine.GAME_OVER
+        assert engine.state == MarioGameEngine.GAME_OVER
 
     def test_jump_detected_during_play(self):
         """A jump gesture triggers the character to jump during PLAYING."""
@@ -781,105 +718,6 @@ class TestMinecraftGameEngine:
         jumping = make_jumping_landmarks(jump_height=80)
         engine.update(jumping, MOCK_CONNECTIONS)
         assert engine._player.on_ground is False
-
-    def test_double_jump_detected_during_play(self):
-        """A second jump gesture while airborne triggers a double jump."""
-        engine = self._make_engine()
-        engine.start()
-
-        standing = make_standing_landmarks()
-        engine.update(standing, MOCK_CONNECTIONS)
-
-        jumping = make_jumping_landmarks(jump_height=80)
-        engine.update(jumping, MOCK_CONNECTIONS)
-        assert engine._player._jump_count == 1
-
-        for _ in range(JUMP_COOLDOWN + 1):
-            engine.update(standing, MOCK_CONNECTIONS)
-
-        engine.update(jumping, MOCK_CONNECTIONS)
-        assert engine._player._jump_count == 2
-
-        for _ in range(JUMP_COOLDOWN + 1):
-            engine.update(standing, MOCK_CONNECTIONS)
-        engine.update(jumping, MOCK_CONNECTIONS)
-        assert engine._player._jump_count == 2
-
-    def test_coin_sound_plays_on_obstacle_pass(self):
-        """Coin sound plays when an obstacle passes the character."""
-        from unittest.mock import MagicMock
-        sound = MagicMock(spec=SoundManager)
-        engine = MinecraftGameEngine(WIDTH, HEIGHT, sound_manager=sound)
-        engine.start()
-
-        standing = make_standing_landmarks()
-        engine.update(standing, MOCK_CONNECTIONS)
-
-        # Place an obstacle that will pass the character
-        obs = MinecraftObstacle(
-            x=CHARACTER_X - 40 - 10, ground_y=GROUND_Y,
-            width=40, height=80, speed=BASE_SPEED,
-            obs_type="pipe", color=(0, 180, 0),
-        )
-        engine._obstacle_manager._obstacles = [obs]
-        engine._obstacle_manager._spawn_timer = 999
-
-        engine.update(standing, MOCK_CONNECTIONS)
-        assert sound.play_coin.called
-
-    def test_hit_sound_plays_on_collision(self):
-        """Hit sound plays when a collision is detected (with lives remaining)."""
-        from unittest.mock import MagicMock
-        sound = MagicMock(spec=SoundManager)
-        engine = MinecraftGameEngine(WIDTH, HEIGHT, sound_manager=sound)
-        engine.start()
-
-        standing = make_standing_landmarks()
-        engine.update(standing, MOCK_CONNECTIONS)
-        engine.update(standing, MOCK_CONNECTIONS)
-
-        obs = MinecraftObstacle(
-            x=CHARACTER_X - 20, ground_y=GROUND_Y,
-            width=40, height=100, speed=BASE_SPEED,
-            obs_type="block", color=(30, 165, 200),
-        )
-        engine._obstacle_manager._obstacles = [obs]
-
-        engine.update(standing, MOCK_CONNECTIONS)
-        assert engine.state == MinecraftGameEngine.PLAYING
-        assert engine.lives == MAX_LIVES - 1
-        assert sound.play_hit.called
-
-    def test_game_over_sound_when_lives_depleted(self):
-        """Game-over sound plays when all lives are lost."""
-        from unittest.mock import MagicMock
-        sound = MagicMock(spec=SoundManager)
-        engine = MinecraftGameEngine(WIDTH, HEIGHT, sound_manager=sound)
-        engine.start()
-
-        standing = make_standing_landmarks()
-        engine.update(standing, MOCK_CONNECTIONS)
-        engine.update(standing, MOCK_CONNECTIONS)
-
-        for _ in range(MAX_LIVES):
-            obs = MinecraftObstacle(
-                x=CHARACTER_X - 20, ground_y=GROUND_Y,
-                width=40, height=100, speed=BASE_SPEED,
-                obs_type="block", color=(30, 165, 200),
-            )
-            engine._obstacle_manager._obstacles = [obs]
-            engine.update(standing, MOCK_CONNECTIONS)
-
-        assert engine.state == MinecraftGameEngine.GAME_OVER
-        assert sound.play_game_over.called
-
-    def test_engine_close_calls_sound_manager(self):
-        """close() delegates to the sound manager."""
-        from unittest.mock import MagicMock
-        sound = MagicMock(spec=SoundManager)
-        engine = MinecraftGameEngine(WIDTH, HEIGHT, sound_manager=sound)
-        engine.close()
-        assert sound.close.called
 
     def test_render_menu_does_not_crash(self):
         """render() in MENU state does not crash."""
@@ -899,7 +737,7 @@ class TestMinecraftGameEngine:
         """render() in GAME_OVER state renders without errors."""
         engine = self._make_engine()
         engine.start()
-        engine._state = MinecraftGameEngine.GAME_OVER
+        engine._state = MarioGameEngine.GAME_OVER
         frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
         engine.render(frame, MOCK_CONNECTIONS)
 
@@ -907,7 +745,7 @@ class TestMinecraftGameEngine:
         """Pressing 'q' from MENU does not start the game."""
         engine = self._make_engine()
         engine.handle_key(ord("q"))
-        assert engine.state == MinecraftGameEngine.MENU
+        assert engine.state == MarioGameEngine.MENU
 
     def test_playing_state_updates_player(self):
         """In PLAYING, update() passes landmarks to the player."""
@@ -920,34 +758,16 @@ class TestMinecraftGameEngine:
         assert engine._player._render_points is not None
 
     def test_background_is_sky_blue_not_black(self):
-        """Rendered playing background is sky blue, not solid black."""
+        """Rendered playing background is light sky blue, not solid black."""
         engine = self._make_engine()
         engine.start()
         frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
         engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
         engine.render(frame, MOCK_CONNECTIONS)
 
+        # The background should be sky blue (not black)
         assert frame[0, 0].sum() > 0
-        assert tuple(frame[0, 0]) == SKY_COLOR
-
-    def test_background_has_grass_block_ground(self):
-        """Rendered playing background has a green grass block band at the bottom."""
-        from src.minecraft_game import GRASS_COLOR, DIRT_COLOR
-
-        engine = self._make_engine()
-        engine.start()
-        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
-        engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
-        engine.render(frame, MOCK_CONNECTIONS)
-
-        # Bottom of the screen should be dirt-brown (check between block borders)
-        # Block borders are at x=0,20,40,...600,640; use x=310 (center of a block)
-        bottom_pixel = tuple(frame[HEIGHT - 1, 310])
-        assert bottom_pixel == DIRT_COLOR
-
-        # Just above the bottom should be either grass or dirt
-        ground_pixel = tuple(frame[engine._ground_y, 310])
-        assert ground_pixel in (GRASS_COLOR, DIRT_COLOR, (20, 20, 20))
+        assert tuple(frame[0, 0]) == (200, 230, 255)  # light sky blue (BGR)
 
     def test_level_up_on_5_obstacles(self):
         """Level increments to 2 after 5 obstacles passed."""
@@ -963,10 +783,10 @@ class TestMinecraftGameEngine:
         assert gap == (180, 280)
 
     def test_initial_spawn_gap_wider_than_existing_game(self):
-        """Minecraft Mario level 1 gaps are much wider than the existing game's 40-90."""
+        """Mario game level 1 gaps are much wider than the existing game's 40-90."""
         engine = self._make_engine()
         min_gap = engine._obstacle_manager.spawn_gap_range[0]
-        assert min_gap >= 100
+        assert min_gap >= 100  # existing game uses 40-90
 
     def test_hud_shows_level(self):
         """After update in PLAYING, the HUD region is visible with color."""
@@ -976,39 +796,359 @@ class TestMinecraftGameEngine:
         engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
         engine.render(frame, MOCK_CONNECTIONS)
 
+        # Top-left HUD area should have non-black pixels (white text)
         hud_area = frame[0:80, 0:200]
         assert hud_area.sum() > 0
 
-    def test_character_target_height_is_larger_than_mario(self):
-        """Minecraft character is taller (110px) than Mario variant (90px) for block visibility."""
-        assert CHARACTER_TARGET_HEIGHT == 110
-        assert CHARACTER_TARGET_HEIGHT > 90
+    def test_coin_sound_plays_on_obstacle_pass(self):
+        """Coin sound plays when an obstacle passes the character."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
 
-    def test_warning_shown_at_top_when_detection_poor(self):
-        """Warning text rendered at the top when scale_warning is active."""
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        # Place an obstacle that will pass the character
+        obs = MarioObstacle(
+            x=CHARACTER_X - 40 - 10, ground_y=GROUND_Y,
+            width=40, height=80, speed=BASE_SPEED,
+            obs_type="pipe", color=(0, 180, 0),
+        )
+        engine._obstacle_manager._obstacles = [obs]
+        engine._obstacle_manager._spawn_timer = 999
+
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert mock_sound.play_coin.called
+
+    def test_hit_sound_plays_on_collision(self):
+        """Hit sound plays when a collision is detected (with lives remaining)."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        obs = MarioObstacle(
+            x=CHARACTER_X - 20, ground_y=GROUND_Y,
+            width=40, height=100, speed=BASE_SPEED,
+            obs_type="block", color=(30, 165, 200),
+        )
+        engine._obstacle_manager._obstacles = [obs]
+
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.state == MarioGameEngine.PLAYING
+        assert engine.lives == MAX_LIVES - 1
+        assert mock_sound.play_hit.called
+
+    def test_game_over_sound_when_lives_depleted(self):
+        """Game-over sound plays when all lives are lost."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        for _ in range(MAX_LIVES):
+            obs = MarioObstacle(
+                x=CHARACTER_X - 20, ground_y=GROUND_Y,
+                width=40, height=100, speed=BASE_SPEED,
+                obs_type="block", color=(30, 165, 200),
+            )
+            engine._obstacle_manager._obstacles = [obs]
+            engine.update(standing, MOCK_CONNECTIONS)
+
+        assert engine.state == MarioGameEngine.GAME_OVER
+        assert mock_sound.play_game_over.called
+
+    def test_double_jump_detected_during_play(self):
+        """A second jump gesture while airborne triggers a double jump."""
+        engine = self._make_engine()
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert engine._player.on_ground is True
+
+        # First jump
+        jumping = make_jumping_landmarks(jump_height=80)
+        engine.update(jumping, MOCK_CONNECTIONS)
+        assert engine._player.on_ground is False
+        assert engine._player._jump_count == 1
+
+        # Wait for cooldown
+        for _ in range(JUMP_COOLDOWN + 2):
+            engine.update(standing, MOCK_CONNECTIONS)
+
+        # Second jump (double jump) while airborne
+        engine.update(jumping, MOCK_CONNECTIONS)
+        assert engine._player._jump_count == 2
+
+    def test_engine_close_calls_sound_manager(self):
+        """close() calls close() on the sound manager."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.close()
+        assert mock_sound.close.called
+
+    def test_close_calls_stop_background_music(self):
+        """close() calls stop_background_music on the sound manager."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.close()
+        assert mock_sound.stop_background_music.called
+
+    # --- Lives system tests ---
+
+    def test_initial_lives_is_max(self):
+        """Engine starts with MAX_LIVES lives."""
+        engine = self._make_engine()
+        assert engine.lives == MAX_LIVES
+
+    def test_sky_block_restores_life(self):
+        """Collecting a sky block restores a life (up to MAX_LIVES)."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        # Lose a life first
+        obs = MarioObstacle(
+            x=CHARACTER_X - 20, ground_y=GROUND_Y,
+            width=40, height=100, speed=BASE_SPEED,
+            obs_type="block", color=(30, 165, 200),
+        )
+        engine._obstacle_manager._obstacles = [obs]
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.lives == MAX_LIVES - 1
+
+        # Collect a sky block to restore life
+        block = SkyBlock(
+            x=CHARACTER_X - SKY_BLOCK_SIZE - 10,
+            y=GROUND_Y - 50,
+            size=SKY_BLOCK_SIZE,
+            color=SKY_BLOCK_COLOR,
+            speed=BASE_SPEED,
+        )
+        engine._sky_blocks = [block]
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert engine.lives == MAX_LIVES
+
+    # --- Background music tests ---
+
+    def test_start_calls_play_background_music(self):
+        """start() calls play_background_music on the sound manager."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
+        assert mock_sound.play_background_music.called
+
+    def test_reset_calls_stop_invincibility_theme(self):
+        """reset() calls stop_invincibility_theme on the sound manager."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
+        mock_sound.reset_mock()
+        engine.reset()
+        assert mock_sound.stop_invincibility_theme.called
+
+    # --- Pose stability tests ---
+
+    def test_pose_warning_shown_when_shoulders_occluded(self):
+        """scale_warning is True when shoulders are not detected."""
+        engine = self._make_engine()
+        engine.start()
+
+        landmarks = make_standing_landmarks()
+        landmarks[LEFT_SHOULDER] = None
+        landmarks[RIGHT_SHOULDER] = None
+        engine.update(landmarks, MOCK_CONNECTIONS)
+        assert engine._player.scale_warning is True
+
+    def test_no_pose_warning_when_standing(self):
+        """scale_warning is False when standing at proper distance."""
+        engine = self._make_engine()
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert engine._player.scale_warning is False
+
+    def test_character_arms_point_forward_like_player_mirror(self):
+        """The miniatura character mirrors the player so arms point forward.
+
+        When the player points both hands forward (toward their physical right,
+        which is the image-LEFT on a non-flipped camera), the character's arms
+        must point FORWARD (image-right, along the character's path) — not be
+        rendered in reverse.
+        """
+        engine = self._make_engine()
+        engine.start()
+
+        landmarks = make_standing_landmarks()
+        # Left shoulder/wrist on the image-right, right shoulder/wrist on the
+        # image-left; both wrists aim toward the image-LEFT (= player's forward).
+        landmarks[11] = (440, 300)
+        landmarks[12] = (200, 300)
+        landmarks[13] = (400, 320)
+        landmarks[15] = (360, 350)
+        landmarks[14] = (170, 320)
+        landmarks[16] = (100, 350)
+
+        engine.update(landmarks, MOCK_CONNECTIONS)
+        rp = engine._player._render_points
+        assert rp is not None
+        assert rp[15][0] > rp[11][0], "left arm should point forward (image-right)"
+        assert rp[16][0] > rp[12][0], "right arm should point forward (image-right)"
+
+    def test_pose_warning_pauses_game(self):
+        """When scale_warning is active, obstacles don't advance."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
+
+        landmarks = make_standing_landmarks()
+        landmarks[LEFT_SHOULDER] = None
+        landmarks[RIGHT_SHOULDER] = None
+        engine.update(landmarks, MOCK_CONNECTIONS)
+
+        obs = MarioObstacle(
+            x=CHARACTER_X + 100, ground_y=GROUND_Y,
+            width=40, height=80, speed=BASE_SPEED,
+            obs_type="pipe", color=(0, 180, 0),
+        )
+        engine._obstacle_manager._obstacles = [obs]
+        engine._obstacle_manager._spawn_timer = 999
+        old_x = obs.x
+        engine.update(landmarks, MOCK_CONNECTIONS)
+        assert obs.x == old_x  # obstacle didn't move
+
+    # --- Sky block tests ---
+
+    def test_sky_block_moves_leftward(self):
+        """Sky blocks move leftward at cloud speed."""
+        engine = self._make_engine()
+        engine.start()
+
+        block = SkyBlock(
+            x=WIDTH, y=150,
+            size=SKY_BLOCK_SIZE, color=SKY_BLOCK_COLOR,
+            speed=BASE_SPEED,
+        )
+        engine._sky_blocks = [block]
+        engine._sky_block_timer = 999
+        old_x = block.x
+        engine._update_sky_blocks(BASE_SPEED)
+        assert block.x < old_x
+
+    # --- Cloud tests ---
+
+    def test_cloud_moves_slower_than_obstacles(self):
+        """Clouds move at CLOUD_SPEED_FACTOR of obstacle speed."""
+        engine = self._make_engine()
+        engine.start()
+
+        cloud = Cloud(
+            x=WIDTH, y=100,
+            width=60, height=40,
+            color=CLOUD_COLOR, speed=BASE_SPEED,
+        )
+        engine._clouds = [cloud]
+        engine._cloud_timer = 999
+        old_x = cloud.x
+        engine._update_clouds(BASE_SPEED)
+        assert cloud.x == pytest.approx(old_x - BASE_SPEED * CLOUD_SPEED_FACTOR)
+
+    def test_cloud_layer_seeded_at_start(self):
+        """The moving cloud layer is populated when a game starts."""
+        engine = self._make_engine()
+        assert engine._clouds == []
+        engine.start()
+        assert len(engine._clouds) >= 4
+
+    def test_seeded_clouds_all_move_leftward(self):
+        """Every seeded cloud moves leftward during cloud updates."""
+        engine = self._make_engine()
+        engine.start()
+        old_xs = [cloud.x for cloud in engine._clouds]
+        engine._update_clouds(BASE_SPEED)
+        for cloud, old_x in zip(engine._clouds, old_xs):
+            assert cloud.x == pytest.approx(old_x - BASE_SPEED * CLOUD_SPEED_FACTOR)
+
+    def test_static_clouds_skipped_when_draw_clouds_false(self):
+        """draw_clouds=False draws no static clouds above the ground."""
+        engine = self._make_engine()
+        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        engine._render_static_environment(frame, draw_clouds=False)
+        sky_region = frame[:engine._ground_y - 1]
+        assert not np.any(
+            (sky_region[:, :, 0] == CLOUD_COLOR[0])
+            & (sky_region[:, :, 1] == CLOUD_COLOR[1])
+            & (sky_region[:, :, 2] == CLOUD_COLOR[2])
+        )
+
+    def test_static_clouds_drawn_when_draw_clouds_true(self):
+        """draw_clouds=True keeps the static clouds (menu/game-over background)."""
+        engine = self._make_engine()
+        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        engine._render_static_environment(frame)
+        sky_region = frame[:engine._ground_y - 1]
+        assert np.any(
+            (sky_region[:, :, 0] == CLOUD_COLOR[0])
+            & (sky_region[:, :, 1] == CLOUD_COLOR[1])
+            & (sky_region[:, :, 2] == CLOUD_COLOR[2])
+        )
+
+    # --- Invincibility theme tests ---
+
+    def test_invincibility_theme_plays_at_threshold(self):
+        """Invincibility theme plays when score reaches INVINCIBILITY_THRESHOLD."""
+        mock_sound = MagicMock()
+        engine = MarioGameEngine(WIDTH, HEIGHT, sound_manager=mock_sound)
+        engine.start()
+
+        standing = make_standing_landmarks()
+        engine.update(standing, MOCK_CONNECTIONS)
+
+        engine._obstacle_manager._passed_count = INVINCIBILITY_THRESHOLD
+        engine.update(standing, MOCK_CONNECTIONS)
+        assert mock_sound.play_invincibility_theme.called
+
+    # --- Graffiti tests ---
+
+    def test_graffiti_text_rendered(self):
+        """Graffiti text is rendered on the ground."""
         engine = self._make_engine()
         engine.start()
         frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
         engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
         engine.render(frame, MOCK_CONNECTIONS)
-        # Force scale warning on (simulate user too close/far)
-        engine._player._scale_warning = True
-        engine.render(frame, MOCK_CONNECTIONS)
-        # Check for GAME_OVER_COLOR (red) pixels at the top of the frame
-        red_mask = np.all(
-            frame == np.array(GAME_OVER_COLOR).reshape(1, 1, 3), axis=2
-        )
-        assert red_mask[:40, :].sum() > 0  # red warning text in top 40 rows
 
-    def test_jump_gated_when_scale_warning(self):
-        """Jump is NOT triggered when scale_warning is active."""
+        # Graffiti text should be visible (white text on ground)
+        graffiti_y = GROUND_Y - 10
+        graffiti_x = WIDTH // 2
+        pixel = frame[graffiti_y, graffiti_x]
+        assert pixel.sum() > 0  # non-black pixel
+
+    # --- Heart rendering tests ---
+
+    def test_hearts_show_in_hud(self):
+        """Hearts are rendered in the top-right corner."""
         engine = self._make_engine()
         engine.start()
-        # Force scale warning (user too close/far)
-        engine._player._scale_warning = True
-        jumping = make_jumping_landmarks(jump_height=80)
-        engine.update(jumping, MOCK_CONNECTIONS)
-        assert engine._player.on_ground is True
+        frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
+        engine.render(frame, MOCK_CONNECTIONS)
+
+        # Top-right area should have heart color (red)
+        heart_area = frame[0:40, WIDTH - 120:WIDTH]
+        assert heart_area.sum() > 0
 
 
 if __name__ == "__main__":

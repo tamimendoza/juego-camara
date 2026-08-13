@@ -45,4 +45,4 @@ if [ ! -f "${FACE_MODEL_FILE}" ]; then
     echo "Face model downloaded successfully."
 fi
 
-exec python3 -m src.mario_face_main "$@"
+exec python3 -m src.games.mario.main "$@"

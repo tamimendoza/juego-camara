@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from src.utils import (
+from src.core.utils import (
     BODY_PART_GROUPS,
     LIMB_TRIANGLES,
     LandmarkPoint,
@@ -95,7 +95,7 @@ class TestLandmarksToPixels:
 class TestMpImageHelpers:
     def test_rgb_to_mp_image_roundtrip(self):
         """rgb_to_mp_image + mp_image_to_numpy should preserve pixel data."""
-        from src.utils import rgb_to_mp_image, mp_image_to_numpy
+        from src.core.utils import rgb_to_mp_image, mp_image_to_numpy
 
         rgb = np.random.randint(0, 256, (480, 640, 3), dtype=np.uint8)
         mp_img = rgb_to_mp_image(rgb)
@@ -106,7 +106,7 @@ class TestMpImageHelpers:
 
     def test_rgb_to_mp_image_accepts_contiguous_array(self):
         """rgb_to_mp_image works with a standard contiguous RGB array."""
-        from src.utils import rgb_to_mp_image, mp_image_to_numpy
+        from src.core.utils import rgb_to_mp_image, mp_image_to_numpy
 
         rgb = np.zeros((100, 200, 3), dtype=np.uint8)
         rgb[50, 100] = (255, 128, 64)

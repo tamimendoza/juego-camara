@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from src.pose_detector import PoseDetector, PoseResult
-from src.utils import mp_image_to_numpy
+from src.core.pose_detector import PoseDetector, PoseResult
+from src.core.utils import mp_image_to_numpy
 
 
 class FakeLandmark:

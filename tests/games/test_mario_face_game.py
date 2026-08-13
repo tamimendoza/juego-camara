@@ -1,6 +1,6 @@
 """Unit tests for the Mario Face game variant.
 
-Tests cover MarioFaceCharacter, FaceCropper, FaceDetector, and
+Tests cover MarioFaceCharacter, FaceCropper, FaceLandmarkerDetector, and
 MarioFaceGameEngine logic. All tests run without a camera or model file by
 using mock landmark data and numpy arrays for frames.
 """
@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
 
-from src.mario_face_game import (
+from src.games.mario.mario_face_game import (
     MarioFaceCharacter,
     MarioFaceGameEngine,
     RESOLUTION,
@@ -18,7 +18,7 @@ from src.mario_face_game import (
     SPEED_INCREMENT,
     GRAFFITI_BRICK_Y_OFFSET,
 )
-from src.mario_game import (
+from src.games.mario.mario_game import (
     BASE_SPEED,
     CHARACTER_TARGET_HEIGHT,
     CHARACTER_X,
@@ -61,10 +61,9 @@ from src.mario_game import (
     LEVEL_INTERVAL,
     LEVEL_SPAWN_GAP_RANGES,
 )
-from src.face_crop import FaceCropper
-from src.face_detector import FaceDetector
-from src.face_landmarker import FaceLandmarkerDetector
-from src.silhouette import SilhouetteDrawer, MARIO_FACE, MARIO_SHIRT, MARIO_OVERALL
+from src.core.face_crop import FaceCropper
+from src.core.face_landmarker import FaceLandmarkerDetector
+from src.core.silhouette import SilhouetteDrawer, MARIO_FACE, MARIO_SHIRT, MARIO_OVERALL
 
 
 # --- Helpers -----------------------------------------------------------------
@@ -153,14 +152,6 @@ def make_face_landmark_list(nose_x=320, nose_y=240, width=WIDTH, height=HEIGHT):
         def __init__(self, landmark):
             self.landmark = landmark
     return LandmarkList(make_face_landmarks(nose_x, nose_y, width, height))
-
-
-def make_mock_face_detector(detect_result=None):
-    """Create a mock FaceDetector that returns the given result from detect()."""
-    mock = MagicMock(spec=FaceDetector)
-    mock.detect.return_value = detect_result
-    mock.close.return_value = None
-    return mock
 
 
 def make_mock_face_cropper(crop_result=None):
@@ -252,7 +243,7 @@ class TestMarioFaceCharacter:
 
     def test_render_without_face_image_draws_mario_head(self):
         """render() without face_image falls back to mario_head + mario_body styles."""
-        from src.silhouette import MARIO_FACE, MARIO_HAT
+        from src.core.silhouette import MARIO_FACE, MARIO_HAT
 
         char = self._make_character(ground_y=384)
         char.update(make_standing_landmarks())
@@ -444,63 +435,6 @@ class TestFaceCropper:
 
         assert face_mask[40, 40] == 255  # center opaque
         assert face_mask[0, 0] == 0      # corner transparent
-
-class TestFaceDetector:
-    def test_detect_returns_landmarks_when_face_found(self):
-        """detect() returns face landmarks when FaceMesh detects a face."""
-        with patch("mediapipe.solutions.face_mesh.FaceMesh") as MockFM:
-            mock_instance = MagicMock()
-            mock_landmarks = make_face_landmarks()
-
-            mock_results = MagicMock()
-            mock_results.multi_face_landmarks = [mock_landmarks]
-            mock_instance.process.return_value = mock_results
-            MockFM.return_value = mock_instance
-
-            detector = FaceDetector()
-            result = detector.detect(np.zeros((480, 640, 3), dtype=np.uint8))
-
-            assert result is not None
-            assert result == mock_landmarks
-
-    def test_detect_returns_none_when_no_face(self):
-        """detect() returns None when FaceMesh finds no face."""
-        with patch("mediapipe.solutions.face_mesh.FaceMesh") as MockFM:
-            mock_instance = MagicMock()
-            mock_results = MagicMock()
-            mock_results.multi_face_landmarks = None
-            mock_instance.process.return_value = mock_results
-            MockFM.return_value = mock_instance
-
-            detector = FaceDetector()
-            result = detector.detect(np.zeros((480, 640, 3), dtype=np.uint8))
-
-            assert result is None
-
-    def test_detect_returns_none_when_empty_list(self):
-        """detect() returns None when FaceMesh returns an empty list."""
-        with patch("mediapipe.solutions.face_mesh.FaceMesh") as MockFM:
-            mock_instance = MagicMock()
-            mock_results = MagicMock()
-            mock_results.multi_face_landmarks = []
-            mock_instance.process.return_value = mock_results
-            MockFM.return_value = mock_instance
-
-            detector = FaceDetector()
-            result = detector.detect(np.zeros((480, 640, 3), dtype=np.uint8))
-
-            assert result is None
-
-    def test_close_does_not_raise(self):
-        """close() releases FaceMesh resources without error."""
-        with patch("mediapipe.solutions.face_mesh.FaceMesh") as MockFM:
-            mock_instance = MagicMock()
-            MockFM.return_value = mock_instance
-
-            detector = FaceDetector()
-            detector.close()  # should not raise
-
-            assert mock_instance.close.called
 
 
 # --- FaceLandmarkerDetector Tests ---------------------------------------------

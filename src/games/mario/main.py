@@ -17,7 +17,7 @@ passed. Every 5 obstacles cleared, the player levels up; from level 2, speed
 increases 10% per level. The player has 3 lives.
 
 Usage:
-    python3 -m src.mario_face_main
+    python3 -m src.games.mario
     # or: ./run_mario_face.sh
 """
 
@@ -27,13 +27,13 @@ import sys
 import cv2
 import numpy as np
 
-from .camera import Camera
+from ...core.camera import Camera
 from .mario_face_game import MarioFaceGameEngine, RESOLUTION, WINDOW_NAME
-from .face_landmarker import FaceLandmarkerDetector
-from .face_crop import FaceCropper
-from .pose_detector import PoseDetector
-from .sound_manager import SoundManager
-from .utils import rgb_to_mp_image
+from ...core.face_landmarker import FaceLandmarkerDetector
+from ...core.face_crop import FaceCropper
+from ...core.pose_detector import PoseDetector
+from ...core.sound_manager import SoundManager
+from ...core.utils import rgb_to_mp_image
 
 MODEL_PATH = "models/pose_landmarker_heavy.task"
 FACE_MODEL_PATH = "models/face_landmarker.task"

@@ -12,7 +12,7 @@ MediaPipe FaceLandmarker (Tasks API, ``face_landmarker.task``).  The Mario body
 levels, lives, sound) are reused from the base Mario game.
 
 Usage:
-    python3 -m src.mario_face_main
+    python3 -m src.games.mario
     # or: ./run_mario_face.sh
 """
 
@@ -23,8 +23,8 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from .face_landmarker import FaceLandmarkerDetector
-from .face_crop import FaceCropper
+from ...core.face_landmarker import FaceLandmarkerDetector
+from ...core.face_crop import FaceCropper
 from .mario_game import (
     BASE_SPEED,
     MarioCharacter,
@@ -52,8 +52,16 @@ GRAFFITI_BRICK_Y_OFFSET = 15  # pixels below ground_y for the graffiti baseline
 
 
 def _resource_path(*parts: str) -> str:
-    """Resolve a path under the repo's ``sprites/`` directory."""
-    return os.path.join(os.path.dirname(__file__), "..", "sprites", *parts)
+    """Resolve a path under the repo's ``sprites/`` directory.
+
+    The module lives at ``src/games/mario/`` so the repo root is three levels
+    up; sprites are always resolved from the repository root regardless of the
+    current working directory.
+    """
+    repo_root = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..")
+    )
+    return os.path.join(repo_root, "sprites", *parts)
 
 
 def _load_sprite(*parts: str) -> Optional[np.ndarray]:

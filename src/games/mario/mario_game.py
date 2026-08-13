@@ -1,23 +1,38 @@
-"""Minecraft-style Mario Bros variant of the pose-controlled jumping game.
+"""Mario Bros variant of the pose-controlled jumping game.
 
 Pipeline:
     camera.read_frame -> BGR->RGB conversion -> mp.Image -> PoseLandmarker.detect ->
-    landmark extraction -> MinecraftGameEngine.update -> MinecraftGameEngine.render -> display
+    landmark extraction -> MarioGameEngine.update -> MarioGameEngine.render -> display
 
 The player jumps by physically raising above a baseline (shoulder landmarks).
-The pose-driven character is rendered in a **Minecraft voxel style** — each body
-part is a filled rectangle (block) rather than a circle or line — using Mario's
-color palette (red cap, peach face, red shirt, blue overalls) against a
-Minecraft-themed background (sky blue, pixel clouds, grass-block ground).
+A Mario-styled miniatura character at the bottom of the screen mirrors the
+jump pose and must clear scrolling obstacles (pipes, blocks, goombas).
+Obstacles start widely separated so players can advance through levels, with
+spacing tightening every 5 obstacles passed. Every 5 obstacles cleared, the
+player levels up; from level 2, speed increases 10% per level.
 
-Obstacles (pipes, blocks, goombas) start widely separated so players can advance
-through levels, with spacing tightening every 5 obstacles passed. Every 5
-obstacles cleared, the player levels up; from level 2, speed increases 10% per
-level. The player has 3 lives (hearts); losing all lives ends the game.
+Features:
+- **Lives system**: The player has 3 lives (hearts); each collision with an
+  obstacle costs a life. Sky blocks in the sky can restore lives. The game
+  ends when all lives are lost.
+- **Background music**: GroundTheme.mp3 plays as background music during
+  gameplay. InvincibilityTheme.mp3 plays when the player has 5+ coins.
+- **Moving clouds**: Clouds drift across the sky at a slower speed than
+  obstacles for a parallax effect.
+- **Brick ground with graffiti**: The ground is rendered as orange-red bricks
+  with white graffiti text.
+- **Pose stability**: If the player is too close or too far from the camera
+  (shoulders not fully detected), the game pauses and shows a warning.
+- **Sound effects**: A coin sound plays when an obstacle is cleared; a hit
+  sound plays when the character loses a life; a game-over sound plays when
+  all lives are lost (via ``pygame.mixer``).
+- **Double jump**: The character can perform a second jump while airborne
+  for extra height, capped at ``MAX_JUMPS = 2`` to keep the character on
+  screen.
 
 Usage:
-    python3 -m src.minecraft_main
-    # or: ./run_minecraft.sh
+    python3 -m src.games.mario
+    # or: ./run_mario_face.sh
 """
 
 import random
@@ -26,13 +41,8 @@ from typing import List, Optional, Sequence
 import cv2
 import numpy as np
 
-from .silhouette import (
-    SilhouetteDrawer,
-    MARIO_FACE, MARIO_HAT, MARIO_HAIR,
-    MARIO_SHIRT, MARIO_OVERALL,
-    MC_SKY, MC_GRASS_TOP, MC_DIRT, MC_CLOUD, MC_BLOCK_BORDER, MC_EYE,
-)
-from .game import (
+from ...core.silhouette import SilhouetteDrawer, MARIO_FACE, MARIO_HAT, MARIO_HAIR, MARIO_SHIRT, MARIO_OVERALL
+from ...framework.jump_game import (
     JumpDetector,
     GRAVITY,
     JUMP_VELOCITY,
@@ -42,9 +52,7 @@ from .game import (
     HEART_COLOR,
     SKY_BLOCK_SIZE,
     SKY_BLOCK_COLOR,
-    SKY_BLOCK_SPEED_FACTOR,
     SKY_BLOCK_SPAWN_INTERVAL,
-    SKY_BLOCK_SIZE_RANGE,
     SKY_BLOCK_HEIGHT_RANGE,
     CLOUD_COLOR,
     CLOUD_SPEED_FACTOR,
@@ -58,17 +66,17 @@ from .game import (
     SkyBlock,
     Cloud,
 )
-from .sound_manager import SoundManager
-from .utils import LandmarkPoint
-from .character import mirror_points
+from ...core.sound_manager import SoundManager
+from ...core.utils import LandmarkPoint
+from ...core.character import mirror_points
 
 # --- Geometry constants ---
-WINDOW_NAME = "Juego Camara - Minecraft Mario"
+WINDOW_NAME = "Juego Camara - Mario Bros"
 RESOLUTION = (640, 480)
-GROUND_Y_RATIO = 0.85  # ground sits lower, leaving room for clouds above
+GROUND_Y_RATIO = 0.85  # ground sits lower, leaving room for clouds/bushes above
 CHARACTER_X = 80
-CHARACTER_TARGET_HEIGHT = 110  # slightly taller than Mario variant (90) for block visibility
-HEAD_BLOCK_MIN = 18
+CHARACTER_TARGET_HEIGHT = 90
+HEAD_RADIUS_MIN = 8
 TOP_MARGIN = 60.0  # px the character top may not rise above the screen top
 MAX_JUMP_OFFSET = max(  # highest jump offset that keeps the character on screen
     GROUND_Y_RATIO * RESOLUTION[1] - CHARACTER_TARGET_HEIGHT - TOP_MARGIN,
@@ -90,34 +98,9 @@ LEFT_SHOULDER = 11
 RIGHT_SHOULDER = 12
 LEFT_HIP = 23
 RIGHT_HIP = 24
-LEFT_HEEL = 27
-RIGHT_HEEL = 28
-
-# --- Scaling constants ---
-# Normalise pose height to CHARACTER_TARGET_HEIGHT, but cap the scale so the
-# character does NOT enlarge when only partial landmarks are detected (e.g.
-# when the user is far from the camera or some joints are occluded).
-NOMINAL_BODY_HEIGHT = 200.0  # expected full-body landmark height in 640×480
-MAX_SCALE = CHARACTER_TARGET_HEIGHT / NOMINAL_BODY_HEIGHT  # ~0.55
-
-# --- Detection-quality constants ---
-# Shoulder width range (in pixels) that indicates the user is at an acceptable
-# distance from the camera. Outside this range the character stays still and a
-# warning message is shown at the top of the screen.
-MIN_SHOULDER_WIDTH = 30
-MAX_SHOULDER_WIDTH = 250
-
-# Maximum limb extension from joints (pixels) — limits how far arms/legs can
-# reach so the character never "desfigurationa" (deforms).
-MAX_ARM_EXTENSION = 35
-MAX_LEG_EXTENSION = 45
-
-# --- Block rendering constants ---
-BLOCK_LINE_WIDTH = 3  # thickness for oriented-rect limb blocks
-BLOCK_BORDER_WIDTH = 1  # outline for each block
 
 # --- Level / spacing constants ---
-LEVEL_INTERVAL = 5
+LEVEL_INTERVAL = 5  # obstacles passed before level increments and gaps tighten
 LEVEL_SPAWN_GAP_RANGES = [
     (180, 280),  # Level 1: very spacious
     (150, 250),  # Level 2
@@ -126,8 +109,8 @@ LEVEL_SPAWN_GAP_RANGES = [
     (90, 170),   # Level 5
     (70, 130),   # Level 6+ (hard cap)
 ]
-MAX_LEVEL = len(LEVEL_SPAWN_GAP_RANGES) - 1
-LEVEL_UP_DISPLAY_FRAMES = 90
+MAX_LEVEL = len(LEVEL_SPAWN_GAP_RANGES) - 1  # index of last range = level 6
+LEVEL_UP_DISPLAY_FRAMES = 90  # show "LEVEL UP" overlay for ~1.5s at 60 FPS
 
 # --- Obstacle dimensions ---
 PIPE_WIDTH = 40
@@ -138,48 +121,47 @@ GOOMBA_WIDTH = 30
 GOOMBA_HEIGHT = 30
 OBSTACLE_TYPES = ["pipe", "block", "goomba"]
 
-# --- Minecraft-themed colors (BGR) ---
-SKY_COLOR = MC_SKY
-CLOUD_COLOR = MC_CLOUD
-GRASS_COLOR = MC_GRASS_TOP
-DIRT_COLOR = MC_DIRT
-BRICK_COLOR = (0, 128, 255)  # orange-red bricks (BGR) — shared ground color
-HUD_COLOR = (255, 255, 255)     # white HUD
-GAME_OVER_COLOR = (0, 0, 255)   # red game over text
-LEVEL_UP_COLOR = (0, 255, 255)  # yellow level-up text
-
-# Reuse Mario obstacle colors (they look fine as Minecraft blocks too)
-PIPE_COLOR = (0, 180, 0)        # green pipes
-BLOCK_COLOR = (30, 165, 200)    # orange blocks
-GOOMBA_COLOR = (0, 50, 200)     # red-brown goombas
+# --- Mario-themed colors (BGR) ---
+SKY_COLOR = (235, 206, 135)      # sky blue (RGB 135,206,235)
+CLOUD_COLOR = (255, 255, 255)    # white clouds
+BUSH_COLOR = (0, 128, 0)         # green bushes
+FLOWER_COLOR = (0, 0, 200)       # red flowers
+GROUND_COLOR = (100, 120, 180)   # brown ground (RGB 180,120,100)
+BRICK_STROKE = (60, 80, 120)     # darker brown for brick lines (RGB 120,80,60)
+BLOCK_COLOR = (30, 165, 200)     # orange blocks (RGB 200,165,30)
+PIPE_COLOR = (0, 180, 0)         # green pipes (RGB 0,180,0)
+GOOMBA_COLOR = (0, 50, 200)      # red-brown goombas (RGB 200,50,0)
+HUD_COLOR = (255, 255, 255)      # white HUD
+GAME_OVER_COLOR = (0, 0, 255)    # red game over text
+LEVEL_UP_COLOR = (0, 255, 255)   # yellow level-up text
 
 # --- Graffiti constants ---
-GRAFFITI_TEXT = "MC"
-GRAFFITI_COLOR = (255, 255, 255)  # white graffiti text
-
-# --- Sky / cloud rendering constants ---
-SKY_BLUE = (200, 230, 255)  # light sky blue for playing background
+GRAFFITI_TEXT = "Familia Mendoza Silva"
+GRAFFITI_COLOR = (255, 255, 255)  # white graffiti
 
 # --- Static environment element positions ---
 _CLOUD_OFFSETS = [
     (80, 80), (200, 70), (340, 90), (480, 60), (560, 85),
 ]
+_BUSH_OFFSETS = [
+    (50, 400), (150, 410), (280, 405), (420, 395), (520, 400),
+]
 
 
-class MinecraftMarioCharacter:
-    """A Minecraft voxel-styled Mario miniatura with jump physics.
+class MarioCharacter:
+    """A Mario-styled miniatura character with jump physics.
 
-    Mirrors ``MarioCharacter`` from ``mario_game.py`` but renders the pose with
-    rectangular blocks (``minecraft_head`` / ``minecraft_body`` styles) instead
-    of smooth circles/lines.  Each body part is a filled rectangle oriented
-    along the limb direction, giving the blocky Minecraft "voxel" look.
+    Mirrors ``PlayerCharacter`` from ``game.py`` but renders the pose with
+    Mario Bros colours (red cap, peach face, red shirt, blue overalls)
+    instead of a plain stick figure. The pose landmarks still drive the
+    character's posture and jump.
     """
 
     def __init__(
         self,
         x: int,
         ground_y: int,
-        scale: float = 0.35,
+        scale: float = 0.30,
     ):
         self.x = x
         self.ground_y = ground_y
@@ -191,19 +173,24 @@ class MinecraftMarioCharacter:
         self._jump_count = 0
 
         self._drawer = SilhouetteDrawer()
-        self._drawer.line_color = MARIO_HAT
+        self._drawer.line_color = MARIO_SHIRT
         self._drawer.joint_color = MARIO_HAT
         self._drawer.silhouette_color = MARIO_SHIRT
-        self._drawer.line_thickness = BLOCK_LINE_WIDTH
-        self._drawer.joint_radius = 2
+        self._drawer.line_thickness = 1
+        self._drawer.joint_radius = 3
 
         self._render_points: Optional[List[LandmarkPoint]] = None
         self._bbox: tuple = (0, 0, 0, 0)
-        self.min_visible = 5  # minimum landmarks required to update pose
-        self._scale_warning = False  # True when user too close/far → show warning
+        self.scale_warning = False
 
     def jump(self) -> bool:
-        """Trigger a jump, supporting double jump while airborne."""
+        """Trigger a jump, supporting a single double-jump while airborne.
+
+        The first jump applies ``JUMP_VELOCITY``.  A second jump (double jump)
+        while airborne applies an additional ``DOUBLE_JUMP_VELOCITY`` boost.
+        After ``MAX_JUMPS`` jumps the method returns ``False`` until the
+        character lands and ``_jump_count`` resets.
+        """
         if self._jump_count >= MAX_JUMPS:
             return False
         if self._jump_count == 0:
@@ -214,17 +201,12 @@ class MinecraftMarioCharacter:
         self._on_ground = False
         return True
 
-    @property
-    def scale_warning(self) -> bool:
-        """True when the pose quality is too poor for reliable rendering."""
-        return self._scale_warning
-
     def update(self, landmarks: Optional[Sequence[LandmarkPoint]] = None) -> None:
         """Apply gravity and update jump position.
 
-        When landmarks are too few or the detected scale is out of range
-        (user too close / too far), the character keeps its last known pose
-        and ``scale_warning`` is set so the game can show a message.
+        Also checks pose stability: if shoulders are not detected or the
+        shoulder width is outside the acceptable range, ``scale_warning``
+        is set to ``True`` so the game can pause and show a warning.
         """
         if not self._on_ground:
             self._vy += GRAVITY
@@ -239,45 +221,42 @@ class MinecraftMarioCharacter:
                 self._jump_count = 0
 
         if landmarks is not None:
-            visible = [p for p in landmarks if p is not None]
-            if len(visible) >= self.min_visible:
-                self._update_render_points(landmarks)
-            # When too few landmarks are visible, keep the last known pose so
-            # the character remains still ("quieto") rather than jumping around.
+            self._update_render_points(landmarks)
+            self._check_pose_stability(landmarks)
+        else:
+            self.scale_warning = True
+
+    def _check_pose_stability(self, landmarks: Sequence[LandmarkPoint]) -> None:
+        """Set scale_warning when shoulders are missing or too close/far."""
+        ls = landmarks[LEFT_SHOULDER] if len(landmarks) > LEFT_SHOULDER else None
+        rs = landmarks[RIGHT_SHOULDER] if len(landmarks) > RIGHT_SHOULDER else None
+        if ls is None or rs is None:
+            self.scale_warning = True
+        else:
+            shoulder_width = abs(rs[0] - ls[0])
+            if shoulder_width < MIN_SHOULDER_WIDTH or shoulder_width > MAX_SHOULDER_WIDTH:
+                self.scale_warning = True
+            else:
+                self.scale_warning = False
 
     def _update_render_points(self, landmarks: Sequence[LandmarkPoint]) -> None:
-        """Map pose landmarks to a fixed-size voxel skeleton.
+        """Scale and translate pose landmarks to miniatura position.
 
-        The character is scaled to ``CHARACTER_TARGET_HEIGHT`` pixels tall,
-        capped by ``MAX_SCALE`` so it does NOT enlarge ("ampliarse"). If the
-        shoulder width falls outside ``[MIN_SHOULDER_WIDTH,
-        MAX_SHOULDER_WIDTH]`` the character is NOT updated (stays still) and a
-        scale warning is activated.
-
-        After scaling, limb endpoints (wrists, heels) are clamped to a maximum
-        extension from their shoulder/hip joints so the character's body never
-        deforms — only arms and legs move, within a limited range.
+        Centers the pose on its shoulder midpoint (or centroid if shoulders
+        are occluded), scales to ``CHARACTER_TARGET_HEIGHT`` pixels tall, and
+        positions the character so its bottom rests on the ground line
+        (offset upward by ``_jump_offset`` when jumping).
         """
         points = list(landmarks)
 
         visible = [p for p in points if p is not None]
-        if len(visible) < self.min_visible:
-            return  # keep last known pose (character stays "quieto")
+        if len(visible) < 3:
+            self._render_points = None
+            self._bbox = (0, 0, 0, 0)
+            return
 
         ls = points[LEFT_SHOULDER] if len(points) > LEFT_SHOULDER else None
         rs = points[RIGHT_SHOULDER] if len(points) > RIGHT_SHOULDER else None
-        if ls is None or rs is None:
-            return
-
-        # Detection-quality check: shoulder width must be in acceptable range
-        shoulder_width = max(
-            ((ls[0] - rs[0]) ** 2 + (ls[1] - rs[1]) ** 2) ** 0.5, 1
-        )
-        if shoulder_width < MIN_SHOULDER_WIDTH or shoulder_width > MAX_SHOULDER_WIDTH:
-            self._scale_warning = True
-            return  # user too close / too far — keep character still
-        self._scale_warning = False
-
         if ls is not None and rs is not None:
             cx = (ls[0] + rs[0]) / 2.0
             cy = (ls[1] + rs[1]) / 2.0
@@ -286,12 +265,13 @@ class MinecraftMarioCharacter:
             cy = sum(p[1] for p in visible) / len(visible)
 
         all_y = [p[1] for p in visible]
+        min_y_vis = min(all_y)
         max_y_vis = max(all_y)
-        pose_height = max_y_vis - min(all_y)
+        pose_height = max_y_vis - min_y_vis
+        if pose_height < 10:
+            pose_height = 10.0
 
-        # Scale to target height, capped to prevent "ampliarse" (enlargement)
-        scale = CHARACTER_TARGET_HEIGHT / max(pose_height, 10.0)
-        scale = min(scale, MAX_SCALE)
+        scale = CHARACTER_TARGET_HEIGHT / pose_height
 
         ground_y = self.ground_y + self._jump_offset
         target_y = ground_y - (max_y_vis - cy) * scale
@@ -315,27 +295,6 @@ class MinecraftMarioCharacter:
             min_ty = min(min_ty, ty)
             max_ty = max(max_ty, ty)
 
-        # Constrain limb endpoints to prevent character deformation.
-        transformed = self._constrain_limbs(transformed)
-
-        # Recompute bbox after constraints
-        min_tx = float("inf")
-        max_tx = float("-inf")
-        min_ty = float("inf")
-        max_ty = float("-inf")
-        for p in transformed:
-            if p is None:
-                continue
-            min_tx = min(min_tx, p[0])
-            max_tx = max(max_tx, p[0])
-            min_ty = min(min_ty, p[1])
-            max_ty = max(max_ty, p[1])
-
-        if min_tx == float("inf"):
-            self._render_points = None
-            self._bbox = (0, 0, 0, 0)
-            return
-
         self._render_points = transformed
 
         pad = 4
@@ -344,63 +303,6 @@ class MinecraftMarioCharacter:
             min_ty - pad,
             max_tx - min_tx + 2 * pad,
             max_ty - min_ty + 2 * pad,
-        )
-
-    def _constrain_limbs(
-        self, points: List[LandmarkPoint]
-    ) -> List[LandmarkPoint]:
-        """Clamp wrist/heel positions to a max distance from shoulder/hip joints.
-
-        Prevents the character from deforming — arms and legs can only extend
-        within a limited range, keeping the body proportional.
-        """
-        result = list(points)
-
-        # Left arm: wrist (15) clamped from left shoulder (11)
-        ls_pt = result[LEFT_SHOULDER] if len(result) > LEFT_SHOULDER else None
-        lw_pt = result[15] if len(result) > 15 else None
-        if ls_pt is not None and lw_pt is not None:
-            result[15] = self._clamp_endpoint(ls_pt, lw_pt, MAX_ARM_EXTENSION)
-
-        # Right arm: wrist (16) clamped from right shoulder (12)
-        rs_pt = result[RIGHT_SHOULDER] if len(result) > RIGHT_SHOULDER else None
-        rw_pt = result[16] if len(result) > 16 else None
-        if rs_pt is not None and rw_pt is not None:
-            result[16] = self._clamp_endpoint(rs_pt, rw_pt, MAX_ARM_EXTENSION)
-
-        # Left leg: heel (27) clamped from left hip (23)
-        lh_pt = result[LEFT_HIP] if len(result) > LEFT_HIP else None
-        lhz_pt = result[LEFT_HEEL] if len(result) > LEFT_HEEL else None
-        if lh_pt is not None and lhz_pt is not None:
-            result[LEFT_HEEL] = self._clamp_endpoint(
-                lh_pt, lhz_pt, MAX_LEG_EXTENSION
-            )
-
-        # Right leg: heel (28) clamped from right hip (24)
-        rh_pt = result[RIGHT_HIP] if len(result) > RIGHT_HIP else None
-        rhz_pt = result[RIGHT_HEEL] if len(result) > RIGHT_HEEL else None
-        if rh_pt is not None and rhz_pt is not None:
-            result[RIGHT_HEEL] = self._clamp_endpoint(
-                rh_pt, rhz_pt, MAX_LEG_EXTENSION
-            )
-
-        return result
-
-    @staticmethod
-    def _clamp_endpoint(
-        joint: LandmarkPoint,
-        endpoint: LandmarkPoint,
-        max_dist: int,
-    ) -> LandmarkPoint:
-        """Clamp *endpoint* to at most *max_dist* pixels from *joint*."""
-        dx = endpoint[0] - joint[0]
-        dy = endpoint[1] - joint[1]
-        dist = (dx ** 2 + dy ** 2) ** 0.5
-        if dist <= max_dist or dist < 1:
-            return endpoint
-        return (
-            int(joint[0] + dx / dist * max_dist),
-            int(joint[1] + dy / dist * max_dist),
         )
 
     @property
@@ -422,12 +324,12 @@ class MinecraftMarioCharacter:
         self._bbox = (0, 0, 0, 0)
 
     def render(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
-        """Draw the Minecraft voxel Mario miniatura on the frame."""
+        """Draw the Mario miniatura on the frame."""
         if self._render_points is None:
             self._draw_fallback(frame)
             return
 
-        styles = ["minecraft_head", "minecraft_body"]
+        styles = ["mario_head", "mario_body", "torso_fill"]
         self._drawer.render_character(
             frame,
             self._render_points,
@@ -437,82 +339,27 @@ class MinecraftMarioCharacter:
         )
 
     def _draw_fallback(self, frame: np.ndarray) -> None:
-        """Draw a simple static Minecraft Mario figure when no pose is available."""
+        """Draw a simple static Mario figure when no pose is available."""
         cx = self.x
         cy = int(self.ground_y + self._jump_offset)
-        block = HEAD_BLOCK_MIN
-
-        # Face block (peach)
-        cv2.rectangle(
-            frame,
-            (cx - block // 2, cy),
-            (cx + block // 2, cy + block),
-            MARIO_FACE, -1,
+        r = HEAD_RADIUS_MIN
+        # Face
+        cv2.circle(frame, (cx, cy - r), r, MARIO_FACE, -1)
+        # Cap
+        cap_center = (cx, cy - 2 * r)
+        cv2.ellipse(
+            frame, cap_center, (int(r * 1.2), int(r * 0.5)),
+            0, 0, 180, MARIO_HAT, -1,
         )
-        # Cap block (red) on top
-        cv2.rectangle(
-            frame,
-            (cx - block // 2, cy - block),
-            (cx + block // 2, cy),
-            MARIO_HAT, -1,
-        )
-        # Pixel eyes
-        eye_size = max(block // 7, 2)
-        eye_y = cy + block // 3
-        cv2.rectangle(
-            frame,
-            (cx - 2 * eye_size, eye_y),
-            (cx - eye_size, eye_y + eye_size),
-            MC_EYE, -1,
-        )
-        cv2.rectangle(
-            frame,
-            (cx + eye_size, eye_y),
-            (cx + 2 * eye_size, eye_y + eye_size),
-            MC_EYE, -1,
-        )
-        # Block borders
-        cv2.rectangle(
-            frame,
-            (cx - block // 2, cy - block),
-            (cx + block // 2, cy + block),
-            MC_BLOCK_BORDER, 2,
-        )
-
-        # Torso block (red shirt)
-        cv2.rectangle(
-            frame,
-            (cx - block // 2, cy + block),
-            (cx + block // 2, cy + block + 20),
-            MARIO_SHIRT, -1,
-        )
-        cv2.rectangle(
-            frame,
-            (cx - block // 2, cy + block),
-            (cx + block // 2, cy + block + 20),
-            MC_BLOCK_BORDER, 1,
-        )
-        # Leg blocks (blue overalls)
-        leg_w = block // 2
-        cv2.rectangle(
-            frame,
-            (cx - block, cy + block + 20),
-            (cx - block + leg_w, cy + block + 40),
-            MARIO_OVERALL, -1,
-        )
-        cv2.rectangle(
-            frame,
-            (cx, cy + block + 20),
-            (cx + leg_w, cy + block + 40),
-            MARIO_OVERALL, -1,
-        )
+        # Body (shirt line)
+        cv2.line(frame, (cx, cy), (cx, cy + 30), MARIO_SHIRT, max(self._drawer.line_thickness + 1, 3))
 
 
-class MinecraftObstacle:
-    """A Minecraft-themed obstacle moving leftward at the current game speed.
+class MarioObstacle:
+    """A Mario-themed obstacle moving leftward at the current game speed.
 
-    Each obstacle has a ``type`` ("pipe", "block", "goomba") rendered as a
-    voxel-style filled rectangle with a dark border.
+    Each obstacle has a ``type`` ("pipe", "block", "goomba") that determines
+    its visual appearance and dimensions.
     """
 
     def __init__(
@@ -539,27 +386,32 @@ class MinecraftObstacle:
         self.x -= self.speed
 
     def render(self, frame: np.ndarray) -> None:
-        """Draw the obstacle as a voxel-style rectangle with border."""
+        """Draw the obstacle according to its Mario type."""
         x0 = int(self.x)
         x1 = int(self.x + self.width)
         y0 = self.ground_y - self.height
         y1 = self.ground_y
 
         if self.type == "pipe":
+            # Green pipe with darker border
             cv2.rectangle(frame, (x0, y0), (x1, y1), self.color, -1)
-            cv2.rectangle(frame, (x0, y0), (x1, y1), MC_BLOCK_BORDER, BLOCK_BORDER_WIDTH)
+            cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 100, 0), 2)
         elif self.type == "block":
+            # Orange block with question mark
             cv2.rectangle(frame, (x0, y0), (x1, y1), self.color, -1)
-            cv2.rectangle(frame, (x0, y0), (x1, y1), MC_BLOCK_BORDER, BLOCK_BORDER_WIDTH)
+            cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 0, 0), 2)
+            # Question mark in the center
             cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
             cv2.putText(frame, "?", (cx - 5, cy + 5), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7, MC_BLOCK_BORDER, 2, cv2.LINE_AA)
+                        0.7, (0, 0, 0), 2, cv2.LINE_AA)
         else:  # goomba
+            # Red-brown enemy rectangle with darker border
             cv2.rectangle(frame, (x0, y0), (x1, y1), self.color, -1)
-            cv2.rectangle(frame, (x0, y0), (x1, y1), MC_BLOCK_BORDER, BLOCK_BORDER_WIDTH)
+            cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 30, 100), 2)
+            # Eyes (small white dots)
             eye_y = y0 + self.height // 3
-            cv2.circle(frame, (x0 + self.width // 3, eye_y), 3, CLOUD_COLOR, -1)
-            cv2.circle(frame, (x1 - self.width // 3, eye_y), 3, CLOUD_COLOR, -1)
+            cv2.circle(frame, (cx := x0 + self.width // 3, eye_y), 3, (255, 255, 255), -1)
+            cv2.circle(frame, (x1 - self.width // 3, eye_y), 3, (255, 255, 255), -1)
 
     def off_screen(self) -> bool:
         """Check if the obstacle has moved completely off the left edge."""
@@ -599,8 +451,8 @@ class MinecraftObstacle:
         return False
 
 
-class MinecraftObstacleManager:
-    """Spawns Minecraft-themed obstacles, tracks score, level, and controls speed.
+class MarioObstacleManager:
+    """Spawns Mario-themed obstacles, tracks score, level, and controls speed.
 
     Obstacles start widely separated (level 1) and the spawn gap tightens
     every ``LEVEL_INTERVAL`` (5) obstacles passed, up to ``MAX_LEVEL``.
@@ -615,10 +467,10 @@ class MinecraftObstacleManager:
         self.width = width
         self.ground_y = ground_y
         self._speed = base_speed
-        self._obstacles: List[MinecraftObstacle] = []
+        self._obstacles: List[MarioObstacle] = []
         self._spawn_timer = 0
         self._passed_count = 0
-        self._type_index = 0
+        self._type_index = 0  # cycles through OBSTACLE_TYPES
 
     @property
     def passed_count(self) -> int:
@@ -675,7 +527,7 @@ class MinecraftObstacleManager:
         else:  # goomba
             width, height, color = GOOMBA_WIDTH, GOOMBA_HEIGHT, GOOMBA_COLOR
 
-        obs = MinecraftObstacle(
+        obs = MarioObstacle(
             x=self.width,
             ground_y=self.ground_y,
             width=width,
@@ -711,15 +563,14 @@ class MinecraftObstacleManager:
         self._type_index = 0
 
 
-class MinecraftGameEngine:
-    """Minecraft voxel-style Mario Bros game engine.
+class MarioGameEngine:
+    """Mario Bros themed game engine.
 
     States:
         MENU (0) -> PLAYING (1) -> GAME_OVER (2)
 
-    Reuses the same jump-detection and physics as the Mario Bros variant,
-    but renders a Minecraft-themed background, blocky character, and voxel
-    obstacles.
+    Reuses the same jump-detection and physics as the base pose jump game,
+    but renders a Mario Bros-style background, character, and obstacles.
     """
 
     MENU = 0
@@ -731,8 +582,8 @@ class MinecraftGameEngine:
         self.height = height
         self._ground_y = int(height * GROUND_Y_RATIO)
 
-        self._player = MinecraftMarioCharacter(CHARACTER_X, self._ground_y)
-        self._obstacle_manager = MinecraftObstacleManager(width, self._ground_y)
+        self._player = MarioCharacter(CHARACTER_X, self._ground_y)
+        self._obstacle_manager = MarioObstacleManager(width, self._ground_y)
         self._jump_detector = JumpDetector(
             threshold=JUMP_THRESHOLD,
             cooldown=JUMP_COOLDOWN,
@@ -742,10 +593,13 @@ class MinecraftGameEngine:
 
         self._state = self.MENU
         self._frame_count = 0
-        self._level_up_timer = 0
+        self._level_up_timer = 0  # frames remaining for level-up overlay
 
         # Lives system
         self._lives = MAX_LIVES
+
+        # Coin counter (accumulated across obstacles and sky blocks)
+        self._coins = 0
 
         # Sky blocks (life-restoring blocks in the sky)
         self._sky_blocks: List[SkyBlock] = []
@@ -762,6 +616,11 @@ class MinecraftGameEngine:
     def lives(self) -> int:
         """Current number of lives remaining (0 to MAX_LIVES)."""
         return self._lives
+
+    @property
+    def coins(self) -> int:
+        """Current number of accumulated coins."""
+        return self._coins
 
     @property
     def state(self) -> int:
@@ -801,19 +660,17 @@ class MinecraftGameEngine:
         self._frame_count = 0
         self._level_up_timer = 0
         self._state = self.MENU
+
         # Reset lives, sky blocks, clouds, and invincibility
         self._lives = MAX_LIVES
+        self._coins = 0
         self._sky_blocks = []
         self._sky_block_timer = 0
         self._clouds = []
+        self._seed_clouds(self.speed)
         self._cloud_timer = 0
         self._invincibility_active = False
         self._sound_manager.stop_invincibility_theme()
-
-    def close(self) -> None:
-        """Clean up resources (sound manager)."""
-        self._sound_manager.stop_background_music()
-        self._sound_manager.close()
 
     def update(
         self,
@@ -841,7 +698,7 @@ class MinecraftGameEngine:
         if landmarks is not None:
             landmarks = mirror_points(landmarks, self.width)
 
-        # 1. Update player physics
+        # 1. Update player physics (includes pose stability check)
         self._player.update(landmarks)
 
         # 2. Pose stability: pause game if pose not fully detected
@@ -858,35 +715,35 @@ class MinecraftGameEngine:
         current_speed = self.speed
         self._obstacle_manager.set_speed(current_speed)
 
-        # 5. Update sky blocks (life-restoring blocks)
-        self._update_sky_blocks(current_speed)
-
-        # 6. Update moving clouds (parallax background)
-        self._update_clouds(current_speed)
-
-        # 7. Update obstacles (handles level-up detection)
+        # 5. Update obstacles (handles level-up detection)
         old_level = self._obstacle_manager.level
-        old_passed = self._obstacle_manager.passed_count
+        old_passed_count = self._obstacle_manager.passed_count
         self._obstacle_manager.update(
             CHARACTER_X, self._player.bounding_box
         )
-        if self._obstacle_manager.passed_count > old_passed:
+        if self._obstacle_manager.passed_count > old_passed_count:
+            self._coins += 1
             self._sound_manager.play_coin()
         if self._obstacle_manager.level > old_level:
             self._level_up_timer = LEVEL_UP_DISPLAY_FRAMES
 
-        # 8. Check sky block collection (restore life)
-        self._check_sky_block_collection()
+        # 6. Update sky blocks
+        self._update_sky_blocks(current_speed)
 
-        # 9. Invincibility theme: play when score reaches threshold
-        if (
-            not self._invincibility_active
-            and self._obstacle_manager.passed_count >= INVINCIBILITY_THRESHOLD
-        ):
-            self._invincibility_active = True
-            self._sound_manager.play_invincibility_theme()
+        # 7. Update clouds
+        self._update_clouds(current_speed)
 
-        # 10. Collision check — lose a life instead of immediate game over
+        # 8. Invincibility theme: play when score >= threshold
+        if self._obstacle_manager.passed_count >= INVINCIBILITY_THRESHOLD:
+            if not self._invincibility_active:
+                self._invincibility_active = True
+                self._sound_manager.play_invincibility_theme()
+        else:
+            if self._invincibility_active:
+                self._invincibility_active = False
+                self._sound_manager.stop_invincibility_theme()
+
+        # 9. Collision check - lose a life instead of immediate game over
         if self._obstacle_manager.check_collisions(self._player.bounding_box):
             self._lives -= 1
             if self._lives > 0:
@@ -895,67 +752,88 @@ class MinecraftGameEngine:
                 self._sound_manager.play_game_over()
                 self._state = self.GAME_OVER
 
-        # 11. Decrement level-up timer
+        # 10. Decrement level-up timer
         if self._level_up_timer > 0:
             self._level_up_timer -= 1
 
-    # --- Sky blocks (life-restoring blocks) ---
-
-    def _update_sky_blocks(self, speed: float) -> None:
-        """Move sky blocks leftward and spawn new ones periodically."""
+    def _update_sky_blocks(self, current_speed: float) -> None:
+        """Update sky blocks: move, check collisions, spawn new ones."""
         for block in self._sky_blocks:
-            block.x -= speed * SKY_BLOCK_SPEED_FACTOR
-        self._sky_blocks = [b for b in self._sky_blocks if not b.off_screen()]
+            block.update()
+
+        char_bbox = self._player.bounding_box
+        for block in self._sky_blocks:
+            if not block.collected and block.check_collision(char_bbox):
+                if self._lives < MAX_LIVES:
+                    self._lives += 1
+                    self._sound_manager.play_coin()
+                block.collected = True
+
+        self._sky_blocks = [
+            b for b in self._sky_blocks
+            if not b.off_screen() and not b.collected
+        ]
+
         self._sky_block_timer -= 1
         if self._sky_block_timer <= 0:
-            self._spawn_sky_block()
+            self._spawn_sky_block(current_speed)
             self._sky_block_timer = random.randint(*SKY_BLOCK_SPAWN_INTERVAL)
 
-    def _spawn_sky_block(self) -> None:
+    def _spawn_sky_block(self, current_speed: float) -> None:
         """Create a new sky block at the right edge."""
-        x = self.width
         y = random.randint(*SKY_BLOCK_HEIGHT_RANGE)
-        size = random.randint(*SKY_BLOCK_SIZE_RANGE)
         block = SkyBlock(
-            x=x, y=y, size=size,
-            color=SKY_BLOCK_COLOR, speed=BASE_SPEED,
+            x=self.width,
+            y=y,
+            size=SKY_BLOCK_SIZE,
+            color=SKY_BLOCK_COLOR,
+            speed=current_speed,
         )
         self._sky_blocks.append(block)
 
-    def _check_sky_block_collection(self) -> None:
-        """Check if the character collects a sky block (restores a life)."""
-        if self._lives >= MAX_LIVES:
-            return
-        for i, block in enumerate(self._sky_blocks):
-            if block.check_collision(self._player.bounding_box):
-                block.collected = True
-                self._lives = min(self._lives + 1, MAX_LIVES)
-                self._sound_manager.play_coin()
-                return
-
-    # --- Moving clouds (parallax background) ---
-
-    def _update_clouds(self, speed: float) -> None:
-        """Move clouds leftward at a slower speed and spawn new ones."""
+    def _update_clouds(self, current_speed: float) -> None:
+        """Update clouds: move and spawn new ones."""
         for cloud in self._clouds:
-            cloud.x -= speed * CLOUD_SPEED_FACTOR
+            cloud.update()
+
         self._clouds = [c for c in self._clouds if not c.off_screen()]
+
         self._cloud_timer -= 1
         if self._cloud_timer <= 0:
-            self._spawn_cloud()
+            self._spawn_cloud(current_speed)
             self._cloud_timer = random.randint(*CLOUD_SPAWN_INTERVAL)
 
-    def _spawn_cloud(self) -> None:
+    def _spawn_cloud(self, current_speed: float) -> None:
         """Create a new cloud at the right edge."""
         width = random.randint(*CLOUD_SIZE_RANGE)
-        height = max(width // 2, 20)
-        y = random.randint(30, 120)
+        height = width * 2 // 3
+        y = random.randint(40, self._ground_y // 2)
         cloud = Cloud(
-            x=self.width, y=y,
-            width=width, height=height,
-            color=CLOUD_COLOR, speed=BASE_SPEED,
+            x=self.width,
+            y=y,
+            width=width,
+            height=height,
+            color=CLOUD_COLOR,
+            speed=current_speed,
         )
         self._clouds.append(cloud)
+
+    def _seed_clouds(self, current_speed: float) -> None:
+        """Populate the moving cloud layer across the sky at game start."""
+        for _ in range(5):
+            width = random.randint(*CLOUD_SIZE_RANGE)
+            height = width * 2 // 3
+            y = random.randint(40, self._ground_y // 2)
+            x = int(self.width * random.uniform(0.15, 0.95))
+            cloud = Cloud(
+                x=x,
+                y=y,
+                width=width,
+                height=height,
+                color=CLOUD_COLOR,
+                speed=current_speed,
+            )
+            self._clouds.append(cloud)
 
     def render(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
         """Render the current game state onto the frame."""
@@ -966,75 +844,104 @@ class MinecraftGameEngine:
         elif self._state == self.GAME_OVER:
             self._render_game_over(frame, connections)
 
-    def _render_static_environment(self, frame: np.ndarray) -> None:
-        """Draw the Minecraft sky, pixel clouds, and grass-block ground with graffiti."""
-        # Sky
-        frame[:] = SKY_COLOR
+    def _render_static_environment(
+        self, frame: np.ndarray, draw_clouds: bool = True,
+        graffiti_y: Optional[int] = None,
+    ) -> None:
+        """Draw static clouds, bushes, and ground with graffiti (no sky fill).
 
-        # Pixel clouds (made of rectangles for a blocky look)
-        for cx, cy in _CLOUD_OFFSETS:
-            cv2.rectangle(frame, (cx - 30, cy - 8), (cx + 30, cy + 8), CLOUD_COLOR, -1)
-            cv2.rectangle(frame, (cx - 50, cy), (cx + 50, cy + 10), CLOUD_COLOR, -1)
+        Args:
+            frame: The display canvas.
+            draw_clouds: When False, static clouds are skipped (bushes, flowers,
+                ground, and graffiti are still drawn). During gameplay the sky is
+                populated only by the moving cloud layer.
+            graffiti_y: Baseline y for the graffiti text. When None, the text is
+                drawn just above the ground line (``ground_top - 10``); when a
+                value is given, the text baseline is placed at that y (used to
+                draw the graffiti over the bricks).
+        """
+        # Static clouds (only for menu / game-over backgrounds)
+        if draw_clouds:
+            for cx, cy in _CLOUD_OFFSETS:
+                cv2.ellipse(frame, (cx, cy), (30, 15), 0, 0, 360, CLOUD_COLOR, -1)
+                cv2.ellipse(frame, (cx - 25, cy + 5), (20, 12), 0, 0, 360, CLOUD_COLOR, -1)
+                cv2.ellipse(frame, (cx + 25, cy + 5), (20, 12), 0, 0, 360, CLOUD_COLOR, -1)
 
-        # Grass-block ground
+        # Bushes
+        for bx, by in _BUSH_OFFSETS:
+            cv2.ellipse(frame, (bx, by), (25, 12), 0, 0, 360, BUSH_COLOR, -1)
+            cv2.ellipse(frame, (bx - 18, by + 4), (15, 9), 0, 0, 360, BUSH_COLOR, -1)
+            cv2.ellipse(frame, (bx + 18, by + 4), (15, 9), 0, 0, 360, BUSH_COLOR, -1)
+            # Red flower
+            cv2.circle(frame, (bx, by - 4), 4, FLOWER_COLOR, -1)
+
+        # Ground (brown band with brick pattern and graffiti)
         ground_top = self._ground_y
-        ground_height = self.height - ground_top
-        grass_h = max(int(ground_height * 0.25), 15)
-        dirt_top = ground_top + grass_h
-
-        # Grass top band (green)
-        cv2.rectangle(frame, (0, ground_top), (self.width, dirt_top), GRASS_COLOR, -1)
-        # Dirt band (brown)
-        cv2.rectangle(frame, (0, dirt_top), (self.width, self.height), DIRT_COLOR, -1)
-        # Block texture lines
-        block_w = 20
-        for x in range(0, self.width, block_w):
-            cv2.line(frame, (x, ground_top), (x, self.height), MC_BLOCK_BORDER, 1)
-        cv2.line(frame, (0, ground_top), (self.width, ground_top), MC_BLOCK_BORDER, 1)
-        cv2.line(frame, (0, dirt_top), (self.width, dirt_top), MC_BLOCK_BORDER, 1)
-
-        # Graffiti text on the ground
-        text = GRAFFITI_TEXT
-        (text_w, text_h), _ = cv2.getTextSize(
-            text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-        )
-        text_x = self.width - text_w - 10
-        text_y = dirt_top + text_h + 5
+        cv2.rectangle(frame, (0, ground_top), (self.width, self.height), GROUND_COLOR, -1)
+        # Brick pattern
+        brick_w = 20
+        brick_h = 10
+        for y in range(ground_top, self.height, brick_h):
+            for x in range(0, self.width, brick_w):
+                cv2.rectangle(frame, (x + 2, y + 2), (x + brick_w - 2, y + brick_h - 2),
+                              BRICK_STROKE, 1)
+        # Graffiti text
+        graffiti_baseline = ground_top - 10 if graffiti_y is None else graffiti_y
         cv2.putText(
-            frame, text, (text_x, text_y),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, GRAFFITI_COLOR, 1, cv2.LINE_AA,
+            frame,
+            GRAFFITI_TEXT,
+            (self.width // 2 - 100, graffiti_baseline),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            GRAFFITI_COLOR,
+            1,
+            cv2.LINE_AA,
         )
 
     def _render_game(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
-        """Render playing game: Minecraft background + character + obstacles + HUD."""
-        # Light sky blue background (overridden by static environment)
-        frame[:] = (200, 230, 255)
-        # Moving clouds (parallax background)
+        """Render playing game: sky background + clouds + sky blocks + character + obstacles + ground + HUD."""
+        # Sky blue background (de-identified, no camera feed)
+        frame[:] = (200, 230, 255)  # light sky blue (BGR)
+
+        # Render moving clouds (parallax background)
         for cloud in self._clouds:
             cloud.render(frame)
-        # Sky blocks (life-restoring blocks)
+
+        # Render sky blocks
         for block in self._sky_blocks:
             block.render(frame)
-        # Static environment (pixel clouds, bushes, grass-block ground with graffiti)
-        self._render_static_environment(frame)
-        self._player.render(frame, connections)
+
+        # Render static environment (bushes, ground with graffiti; no static clouds)
+        self._render_static_environment(frame, draw_clouds=False)
+
+        # Render obstacles
         self._obstacle_manager.render(frame)
+
+        # Render character
+        self._player.render(frame, connections)
+
+        # HUD (hearts, level, score, speed)
         self._draw_hud(frame)
-        self._render_warning(frame)
+
+        # Pose warning text
+        if self._player.scale_warning:
+            cv2.putText(
+                frame,
+                POSE_WARNING_TEXT,
+                (self.width // 2 - 180, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                POSE_WARNING_COLOR,
+                2,
+                cv2.LINE_AA,
+            )
+
+        # Level-up overlay
         if self._level_up_timer > 0:
             self._render_level_up(frame)
 
-    def _render_warning(self, frame: np.ndarray) -> None:
-        """Draw a warning message at the top when the user is too close or far."""
-        if self._player.scale_warning:
-            cv2.putText(
-                frame, "ACERQUE O ALEJE LA CAMARA",
-                (self.width // 2 - 120, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, GAME_OVER_COLOR, 2, cv2.LINE_AA,
-            )
-
     def _render_menu(self, frame: np.ndarray) -> None:
-        """Render the Minecraft-themed menu screen."""
+        """Render the Mario-themed menu screen."""
         frame[:] = SKY_COLOR
         self._render_static_environment(frame)
 
@@ -1045,24 +952,25 @@ class MinecraftGameEngine:
 
         cx = self.width // 2
         cv2.putText(
-            frame, "MINECRAFT MARIO",
-            (cx - 110, self.height // 2 - 40),
+            frame, "MARIO POSE JUMP",
+            (cx - 120, self.height // 2 - 40),
             cv2.FONT_HERSHEY_SIMPLEX, 1.0, HUD_COLOR, 2, cv2.LINE_AA,
         )
         cv2.putText(
             frame, "Jump to start",
-            (cx - 70, self.height // 2 + 10),
+            (cx - 80, self.height // 2 + 10),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
         )
         cv2.putText(
             frame, "Press SPACE to start",
-            (cx - 90, self.height // 2 + 50),
+            (cx - 100, self.height // 2 + 50),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
         )
 
     def _render_game_over(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
         """Render game over screen (frozen game frame + overlay)."""
         self._render_game(frame, connections)
+        # Dim the game slightly
         frame[:] = (frame * 0.4).astype(frame.dtype)
 
         speed_mult = SPEED_MULTIPLIER ** (self._obstacle_manager.level - 1)
@@ -1098,9 +1006,7 @@ class MinecraftGameEngine:
         font_scale = 1.2
         thickness = 3
         text = f"LEVEL {self._obstacle_manager.level} !"
-        (w, h), baseline = cv2.getTextSize(
-            text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness
-        )
+        (w, h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
         cx = self.width // 2
         cv2.putText(
             frame, text,
@@ -1150,7 +1056,7 @@ class MinecraftGameEngine:
         speed_mult = SPEED_MULTIPLIER ** (self._obstacle_manager.level - 1)
         self._draw_hearts(frame)
         cv2.putText(
-            frame, f"Bloques: {self.passed_count}",
+            frame, f"Monedas: {self.passed_count}",
             (10, 25),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, HUD_COLOR, 1, cv2.LINE_AA,
         )
@@ -1174,3 +1080,8 @@ class MinecraftGameEngine:
                 self.start()
         elif key == ord("q") or key == 27:
             pass  # handled by caller for exit
+
+    def close(self) -> None:
+        """Clean up resources (sound manager)."""
+        self._sound_manager.stop_background_music()
+        self._sound_manager.close()

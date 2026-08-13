@@ -10,13 +10,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.sound_manager import SoundManager, MUSIC_VOLUME, SFX_VOLUME
+from src.core.sound_manager import SoundManager, MUSIC_VOLUME, SFX_VOLUME
 
 
 class TestSoundManager:
     def test_init_without_pygame(self):
         """SoundManager initializes even when pygame is not available."""
-        with patch("src.sound_manager.pygame", None):
+        with patch("src.core.sound_manager.pygame", None):
             mgr = SoundManager(sounds_dir="sounds")
             assert mgr.available is False
             assert mgr.music_available is False
@@ -26,50 +26,50 @@ class TestSoundManager:
         mock_pygame = MagicMock()
         mock_pygame.mixer.InitError = Exception
         mock_pygame.mixer.init.side_effect = Exception("no audio device")
-        with patch("src.sound_manager.pygame", mock_pygame):
+        with patch("src.core.sound_manager.pygame", mock_pygame):
             mgr = SoundManager(sounds_dir="sounds")
             assert mgr.available is False
             assert mgr.music_available is False
 
     def test_play_coin_no_crash_when_unavailable(self):
         """play_coin() is a no-op when audio is unavailable."""
-        with patch("src.sound_manager.pygame", None):
+        with patch("src.core.sound_manager.pygame", None):
             mgr = SoundManager(sounds_dir="sounds")
             mgr.play_coin()  # should not raise
 
     def test_play_game_over_no_crash_when_unavailable(self):
         """play_game_over() is a no-op when audio is unavailable."""
-        with patch("src.sound_manager.pygame", None):
+        with patch("src.core.sound_manager.pygame", None):
             mgr = SoundManager(sounds_dir="sounds")
             mgr.play_game_over()  # should not raise
 
     def test_play_background_music_no_crash_when_unavailable(self):
         """play_background_music() is a no-op when audio is unavailable."""
-        with patch("src.sound_manager.pygame", None):
+        with patch("src.core.sound_manager.pygame", None):
             mgr = SoundManager(sounds_dir="sounds")
             mgr.play_background_music()  # should not raise
 
     def test_play_invincibility_theme_no_crash_when_unavailable(self):
         """play_invincibility_theme() is a no-op when audio is unavailable."""
-        with patch("src.sound_manager.pygame", None):
+        with patch("src.core.sound_manager.pygame", None):
             mgr = SoundManager(sounds_dir="sounds")
             mgr.play_invincibility_theme()  # should not raise
 
     def test_stop_background_music_no_crash_when_unavailable(self):
         """stop_background_music() is a no-op when audio is unavailable."""
-        with patch("src.sound_manager.pygame", None):
+        with patch("src.core.sound_manager.pygame", None):
             mgr = SoundManager(sounds_dir="sounds")
             mgr.stop_background_music()  # should not raise
 
     def test_stop_no_crash_when_unavailable(self):
         """stop() is a no-op when audio is unavailable."""
-        with patch("src.sound_manager.pygame", None):
+        with patch("src.core.sound_manager.pygame", None):
             mgr = SoundManager(sounds_dir="sounds")
             mgr.stop()  # should not raise
 
     def test_close_resets_state(self):
         """close() sets available to False and clears sound objects."""
-        with patch("src.sound_manager.pygame", None):
+        with patch("src.core.sound_manager.pygame", None):
             mgr = SoundManager(sounds_dir="sounds")
             mgr.close()
             assert mgr.available is False
@@ -83,7 +83,7 @@ class TestSoundManager:
         mock_pygame.mixer.Sound.side_effect = Exception("file not found")
         mock_pygame.mixer.Sound = MagicMock(side_effect=FileNotFoundError)
         mock_pygame.mixer.music.load.side_effect = FileNotFoundError
-        with patch("src.sound_manager.pygame", mock_pygame):
+        with patch("src.core.sound_manager.pygame", mock_pygame):
             mgr = SoundManager(sounds_dir="nonexistent_dir")
             assert mgr._coin_sound is None
             assert mgr._game_over_sound is None
@@ -115,7 +115,7 @@ class TestSoundManager:
         mock_pygame.mixer.init.return_value = None
         mock_pygame.mixer.Sound.return_value = MagicMock()
         mock_pygame.mixer.music.load.return_value = None
-        with patch("src.sound_manager.pygame", mock_pygame):
+        with patch("src.core.sound_manager.pygame", mock_pygame):
             mgr = SoundManager(sounds_dir="sounds")
             mgr._music_available = True
             mgr.play_background_music()
@@ -127,7 +127,7 @@ class TestSoundManager:
         mock_pygame.mixer.init.return_value = None
         mock_pygame.mixer.Sound.return_value = MagicMock()
         mock_pygame.mixer.music.load.return_value = None
-        with patch("src.sound_manager.pygame", mock_pygame):
+        with patch("src.core.sound_manager.pygame", mock_pygame):
             mgr = SoundManager(sounds_dir="sounds")
             mgr._music_available = True
             mgr.play_invincibility_theme()

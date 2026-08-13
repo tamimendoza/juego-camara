@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from src.silhouette import SilhouetteDrawer
+from src.core.silhouette import SilhouetteDrawer
 
 
 class TestDrawHeadCircle:
@@ -192,7 +192,7 @@ class TestRenderCharacterHeadCircleStyle:
 class TestDrawMarioHead:
     def test_draws_face_and_cap(self):
         """Mario head draws a peach face circle and a red cap above it."""
-        from src.silhouette import MARIO_FACE, MARIO_HAT
+        from src.core.silhouette import MARIO_FACE, MARIO_HAT
 
         drawer = SilhouetteDrawer()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -242,7 +242,7 @@ class TestDrawMarioHead:
 class TestDrawMarioBody:
     def test_draws_body_connections(self):
         """Mario body draws shoulder and leg connections in Mario colors."""
-        from src.silhouette import MARIO_SHIRT, MARIO_OVERALL
+        from src.core.silhouette import MARIO_SHIRT, MARIO_OVERALL
 
         drawer = SilhouetteDrawer()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -295,7 +295,7 @@ class TestDrawMarioBody:
 
     def test_render_character_with_mario_styles(self):
         """render_character with mario_head + mario_body styles draws Mario look."""
-        from src.silhouette import MARIO_FACE, MARIO_HAT, MARIO_SHIRT, MARIO_OVERALL
+        from src.core.silhouette import MARIO_FACE, MARIO_HAT, MARIO_SHIRT, MARIO_OVERALL
 
         drawer = SilhouetteDrawer()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -330,7 +330,7 @@ class TestDrawMarioBody:
 class TestDrawMinecraftHead:
     def test_draws_cap_and_face_blocks(self):
         """Minecraft head renders a red cap block above a peach face block."""
-        from src.silhouette import MARIO_FACE, MARIO_HAT
+        from src.core.silhouette import MARIO_FACE, MARIO_HAT
 
         drawer = SilhouetteDrawer()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -355,7 +355,7 @@ class TestDrawMinecraftHead:
 
     def test_draws_pixel_eyes(self):
         """Minecraft head has two small black pixel eyes in the face block."""
-        from src.silhouette import MC_EYE
+        from src.core.silhouette import MC_EYE
 
         drawer = SilhouetteDrawer()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -382,7 +382,7 @@ class TestDrawMinecraftHead:
 
     def test_block_border_drawn(self):
         """Minecraft head has a dark border outlining the square block."""
-        from src.silhouette import MC_BLOCK_BORDER
+        from src.core.silhouette import MC_BLOCK_BORDER
 
         drawer = SilhouetteDrawer()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -417,7 +417,7 @@ class TestDrawMinecraftHead:
 class TestDrawMinecraftBody:
     def test_draws_body_as_solid_rectangles(self):
         """Minecraft body draws five solid rectangle blocks via predefined segments."""
-        from src.silhouette import MARIO_SHIRT, MARIO_OVERALL
+        from src.core.silhouette import MARIO_SHIRT, MARIO_OVERALL
 
         drawer = SilhouetteDrawer()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -467,7 +467,7 @@ class TestDrawMinecraftBody:
 
     def test_skips_none_segments(self):
         """Limb blocks are skipped when required landmarks are None."""
-        from src.silhouette import MARIO_SHIRT, MARIO_OVERALL
+        from src.core.silhouette import MARIO_SHIRT, MARIO_OVERALL
 
         drawer = SilhouetteDrawer()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -493,7 +493,7 @@ class TestDrawMinecraftBody:
 
     def test_render_character_with_minecraft_styles(self):
         """render_character with minecraft_head + minecraft_body draws voxel Mario."""
-        from src.silhouette import MARIO_FACE, MARIO_HAT
+        from src.core.silhouette import MARIO_FACE, MARIO_HAT
 
         drawer = SilhouetteDrawer()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -573,7 +573,7 @@ class TestDrawOrientedRect:
 class TestDrawFaceOverlay:
     def test_draws_face_image_at_nose(self):
         """Face overlay places the face crop centered at the nose landmark."""
-        from src.silhouette import MARIO_SHIRT
+        from src.core.silhouette import MARIO_SHIRT
 
         drawer = SilhouetteDrawer()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -594,7 +594,7 @@ class TestDrawFaceOverlay:
 
     def test_falls_back_to_peach_face_circle_when_no_face(self):
         """When face_image is None, falls back to peach face circle."""
-        from src.silhouette import MARIO_FACE
+        from src.core.silhouette import MARIO_FACE
 
         drawer = SilhouetteDrawer()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -610,7 +610,7 @@ class TestDrawFaceOverlay:
 
     def test_falls_back_to_peach_face_circle_when_no_mask(self):
         """When face_mask is None but face_image exists, falls back to peach circle."""
-        from src.silhouette import MARIO_FACE
+        from src.core.silhouette import MARIO_FACE
 
         drawer = SilhouetteDrawer()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -697,12 +697,12 @@ class TestRenderCharacterFaceOverlayStyle:
         # Face overlay should be drawn at the nose position
         assert tuple(frame[240, 320]) == (100, 150, 200)
         # Body line should also be drawn (red shirt)
-        from src.silhouette import MARIO_SHIRT
+        from src.core.silhouette import MARIO_SHIRT
         assert tuple(frame[300, 320]) == MARIO_SHIRT
 
     def test_face_overlay_style_without_face_falls_back(self):
         """render_character with 'face_overlay' but no face image draws peach fallback."""
-        from src.silhouette import MARIO_FACE
+        from src.core.silhouette import MARIO_FACE
 
         drawer = SilhouetteDrawer()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
