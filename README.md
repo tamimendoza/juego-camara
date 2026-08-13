@@ -23,8 +23,8 @@ instead of `./run.sh`, download the model manually:
 
 ```bash
 mkdir -p models
-wget -O models/pose_landmarker_lite.task \
-  https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float32/latest/pose_landmarker_lite.task
+wget -O models/pose_landmarker_heavy.task \
+  https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float32/latest/pose_landmarker_heavy.task
 ```
 
 ## Usage

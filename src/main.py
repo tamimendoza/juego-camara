@@ -17,7 +17,7 @@ from .utils import rgb_to_mp_image
 
 WINDOW_NAME = "Juego Camara"
 RESOLUTION = (640, 480)
-MODEL_PATH = "models/pose_landmarker_lite.task"
+MODEL_PATH = "models/pose_landmarker_heavy.task"
 
 
 def main() -> int:

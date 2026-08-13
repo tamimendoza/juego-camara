@@ -4,4 +4,4 @@ numpy==1.26.4
 pygame==2.5.1
 
 # Multi-person pose detection model (downloaded at runtime by run.sh):
-#   models/pose_landmarker_lite.task from MediaPipe Model Registry
+#   models/pose_landmarker_heavy.task from MediaPipe Model Registry

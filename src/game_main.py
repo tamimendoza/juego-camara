@@ -25,7 +25,7 @@ from .pose_detector import PoseDetector
 from .sound_manager import SoundManager
 from .utils import rgb_to_mp_image
 
-MODEL_PATH = "models/pose_landmarker_lite.task"
+MODEL_PATH = "models/pose_landmarker_heavy.task"
 
 
 def main() -> int:

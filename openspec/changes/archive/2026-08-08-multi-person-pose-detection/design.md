@@ -41,7 +41,7 @@ The existing `PoseDetector` wraps `mp.solutions.pose.Pose` which detects a singl
 
 ### Decision 4: Model file download in run.sh
 
-**Choice:** `run.sh` checks for `models/pose_landmarker_lite.task` and downloads via `wget` if missing. Falls back to `curl` if `wget` is unavailable.
+**Choice:** `run.sh` checks for `models/pose_landmarker_heavy.task` and downloads via `wget` if missing. Falls back to `curl` if `wget` is unavailable.
 
 **Rationale:** Avoids committing a binary to git. The download is a single command. Error handling ensures the user gets a clear message if there's no internet.
 

@@ -157,7 +157,7 @@ The system SHALL download and manage a MediaPipe pose landmarker model file at s
 
 #### Scenario: Model file downloaded on first run
 
-- **WHEN** the application starts and `models/pose_landmarker_lite.task` does not exist
+- **WHEN** the application starts and `models/pose_landmarker_heavy.task` does not exist
 - **THEN** the system downloads the model file from the MediaPipe model registry
 - **AND** if the download fails, the system prints a clear error and exits gracefully
 

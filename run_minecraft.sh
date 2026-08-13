@@ -8,8 +8,8 @@ cd "$(dirname "$0")"
 
 # Download the MediaPipe pose landmarker model if not present
 MODEL_DIR="models"
-MODEL_FILE="${MODEL_DIR}/pose_landmarker_lite.task"
-MODEL_URL="https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float32/latest/pose_landmarker_lite.task"
+MODEL_FILE="${MODEL_DIR}/pose_landmarker_heavy.task"
+MODEL_URL="https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float32/latest/pose_landmarker_heavy.task"
 
 if [ ! -f "${MODEL_FILE}" ]; then
     echo "Downloading pose landmarker model (lite)..."

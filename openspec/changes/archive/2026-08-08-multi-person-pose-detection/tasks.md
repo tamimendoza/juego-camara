@@ -1,7 +1,7 @@
 ## 1. Infrastructure
 
 - [x] 1.1 Add `models/` to `.gitignore`
-- [x] 1.2 Update `run.sh` to download `pose_landmarker_lite.task` if missing
+- [x] 1.2 Update `run.sh` to download `pose_landmarker_heavy.task` if missing
 - [x] 1.3 Add model download note to `requirements.txt`
 
 ## 2. Utility Functions

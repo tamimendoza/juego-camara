@@ -53,7 +53,7 @@ class PoseDetector:
 
     def __init__(
         self,
-        model_path: str = "models/pose_landmarker_lite.task",
+        model_path: str = "models/pose_landmarker_heavy.task",
         num_poses: int = 4,
         min_pose_detection_confidence: float = 0.5,
         min_pose_presence_confidence: float = 0.5,

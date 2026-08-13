@@ -8,7 +8,7 @@ The current `mp.solutions.pose.Pose` API detects only a single person per frame.
 - **Add `CharacterManager`** class in `src/character.py` that manages one `MimicCharacter` per detected person, with a distinct color per character
 - **Update `main.py`** to convert the BGR camera frame to RGB → `mp.Image` before detection, and to use `CharacterManager` instead of a single `MimicCharacter`
 - **Update `utils.py`** to handle the `presence` field from `PoseLandmarker` results and add `mp.Image` conversion helpers
-- **Download model file** (`pose_landmarker_lite.task`) via `run.sh` at startup; add `models/` to `.gitignore`
+- **Download model file** (`pose_landmarker_heavy.task`) via `run.sh` at startup; add `models/` to `.gitignore`
 - **Add unit tests** for `CharacterManager` lifecycle and updated utilities
 
 ## Capabilities
@@ -31,4 +31,4 @@ The current `mp.solutions.pose.Pose` API detects only a single person per frame.
 - **Modified**: `run.sh` — downloads model file if missing
 - **Modified**: `.gitignore` — excludes `models/` directory
 - **Modified**: `README.md` — documents multi-person mode
-- **New dependency**: `pose_landmarker_lite.task` model file (downloaded at runtime, ~2.5 MB)
+- **New dependency**: `pose_landmarker_heavy.task` model file (downloaded at runtime, ~2.5 MB)
