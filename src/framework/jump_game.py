@@ -19,9 +19,8 @@ your engine on top of these pieces (see ``src/games/mario/`` for a worked
 example).
 """
 
-import math
 import random
-import time
+from collections import deque
 from typing import List, Optional, Sequence
 
 import cv2
@@ -47,12 +46,9 @@ MAX_JUMP_OFFSET = max(  # highest jump offset that keeps the character on screen
 )
 
 # --- Jump detection constants ---
-JUMP_THRESHOLD = 30.0  # pixels shoulder midpoint must rise above baseline
+JUMP_THRESHOLD = 30.0  # px the shoulder midpoint must rise to confirm a jump
 JUMP_COOLDOWN = 8  # frames between allowed jump triggers
-BASELINE_EMA_ALPHA = 0.05  # slow EMA for dynamic baseline adaptation
-CROUCH_ANGLE_THRESHOLD = 150.0  # avg knee angle (deg) below which legs are bent
-CROUCH_HOLD_FRAMES = 4  # consecutive crouch frames required to arm the jump
-ARMED_TIMEOUT_FRAMES = 20  # frames to jump after arming before the arm expires
+JUMP_RISE_WINDOW = 5  # frames over which the body must rise to confirm a jump
 ANKLE_RISE_THRESHOLD = 10.0  # px ankles must rise to confirm a real jump
 
 # --- Physics constants ---
@@ -65,7 +61,7 @@ DOUBLE_JUMP_VELOCITY = -10.0
 
 # --- Game speed constants ---
 BASE_SPEED = 4.0  # starting obstacle speed (px/frame)
-SPEED_MULTIPLIER = 1.10  # multiplied every LEVEL_INTERVAL obstacles
+SPEED_MULTIPLIER = 2.0  # multiplied every LEVEL_INTERVAL obstacles
 SPEED_INTERVAL = 10  # obstacles passed before speed increases
 LEVEL_INTERVAL = 5  # obstacles passed before level increments
 
@@ -114,119 +110,114 @@ HUD_COLOR = (255, 255, 255)  # white
 NOSE = 0
 LEFT_SHOULDER = 11
 RIGHT_SHOULDER = 12
-LEFT_HIP = 23
-RIGHT_HIP = 24
-LEFT_KNEE = 25
-RIGHT_KNEE = 26
 LEFT_ANKLE = 27
 RIGHT_ANKLE = 28
 
 
-class JumpDetector:
-    """Detects a physical jump from pose landmarks using a two-phase gesture.
+def draw_heart(
+    frame: np.ndarray,
+    center: tuple,
+    size: float,
+    color: tuple,
+) -> None:
+    """Draw a filled heart shape centered at ``center`` with width ``size`` px.
 
-    A jump only fires when the player first bends their legs (crouches — the
-    average knee angle drops below ``CROUCH_ANGLE_THRESHOLD`` for
-    ``CROUCH_HOLD_FRAMES`` frames, arming the detector) and then performs an
-    actual jump — the whole body (shoulders AND ankles) rises above the crouch
-    baseline. Raising the shoulders alone never triggers a jump, and crouching
-    without a takeoff never fires (the arm expires after
-    ``ARMED_TIMEOUT_FRAMES``).
+    Uses the classic parametric heart curve (``16 sin³t``, ``13 cos t − 5 cos 2t −
+    2 cos 3t − cos 4t``) sampled and filled as a polygon, so HUD lives render as
+    hearts instead of plain circles.
+    """
+    cx, cy = center
+    scale = size / 32.0  # curve spans [-16, 16] in x and ~[-14.25, 14.25] in y
+    points = []
+    for t in np.linspace(0.0, 2.0 * np.pi, 64):
+        x = 16.0 * np.sin(t) ** 3
+        y = (
+            13.0 * np.cos(t)
+            - 5.0 * np.cos(2.0 * t)
+            - 2.0 * np.cos(3.0 * t)
+            - np.cos(4.0 * t)
+            + 2.75  # shift so the heart's bounding box is centered on cy
+        )
+        points.append((int(cx + x * scale), int(cy - y * scale)))
+    cv2.fillPoly(frame, [np.array(points, dtype=np.int32)], color)
+
+
+class JumpDetector:
+    """Detects a physical jump from pose landmarks, regardless of orientation.
+
+    A jump fires when the whole body rises together: the shoulder midpoint AND
+    the ankle midpoint both move upward by their thresholds within a short
+    window (``JUMP_RISE_WINDOW`` frames). Requiring both signals confirms a
+    real vertical translation (the feet leave the ground) instead of an arm
+    raise, shrug, or lean — and it works whether the player faces the camera
+    (de frente) or stands in profile, because a real jump always moves both
+    shoulders and ankles up in the image.
+
+    No crouch is required to arm the detector. A knee-bend (crouch) gate was
+    previously needed, but it failed for players facing the camera: the bend
+    that precedes a front-facing jump happens mostly in the depth axis
+    (toward the camera), so the 2D-projected knee angle stays near-straight
+    and the jump never fires.
 
     States:
-      IDLE       — EMA shoulder baseline adapts; arms when the legs stay bent.
-      ARMED      — legs are bent; fires when shoulders AND ankles rise.
-      cooldown   — blocks further triggers for a few frames after a jump fires.
+      IDLE      — recent (shoulder, ankle) positions are kept in a short
+                  history; a fast whole-body rise fires a jump.
+      cooldown  — blocks further triggers for a few frames after a jump fires.
     """
 
     def __init__(
         self,
         threshold: float = JUMP_THRESHOLD,
         cooldown: int = JUMP_COOLDOWN,
-        ema_alpha: float = BASELINE_EMA_ALPHA,
     ):
         self._threshold = threshold
         self._cooldown = cooldown
-        self._ema_alpha = ema_alpha
-        self._baseline_y: Optional[float] = None
         self._cooldown_counter = 0
         self._frame_count = 0
-
-        # Two-phase (crouch → jump) state
-        self._crouch_frames = 0
-        self._armed = False
-        self._armed_frames = 0
-        self._crouch_baseline: Optional[float] = None
-        self._ankle_baseline: Optional[float] = None
+        self._history: deque = deque(maxlen=JUMP_RISE_WINDOW)
 
     def update(self, landmarks: Sequence[LandmarkPoint]) -> bool:
         """Process a frame of landmarks. Returns True if a jump should fire."""
         if not self._has_shoulders(landmarks):
+            self._history.clear()
             self._frame_count += 1
-            self._crouch_frames = 0
             return False
 
         shoulder_y = self._shoulder_midpoint_y(landmarks)
+        ankle_y = self._ankle_midpoint_y(landmarks)
 
         # In cooldown: count down, no jump trigger
         if self._cooldown_counter > 0:
             self._cooldown_counter -= 1
             self._frame_count += 1
-            self._crouch_frames = 0
             return False
 
-        if self._armed:
-            self._armed_frames += 1
-            if self._armed_frames > ARMED_TIMEOUT_FRAMES:
-                self._disarm()
-            else:
-                ankle_y = self._ankle_midpoint_y(landmarks)
-                if (
-                    ankle_y is not None
-                    and self._crouch_baseline is not None
-                    and self._ankle_baseline is not None
-                    and shoulder_y < self._crouch_baseline - self._threshold
-                    and ankle_y < self._ankle_baseline - ANKLE_RISE_THRESHOLD
-                ):
-                    self._disarm()
-                    self._cooldown_counter = self._cooldown
-                    self._frame_count += 1
-                    return True
-        else:
-            # IDLE: slowly adapt baseline to gradual position changes
-            if self._baseline_y is None:
-                self._baseline_y = shoulder_y
-            else:
-                self._baseline_y = (
-                    self._baseline_y * (1 - self._ema_alpha)
-                    + shoulder_y * self._ema_alpha
-                )
+        # A jump needs the ankles visible so the whole-body rise can be
+        # confirmed (raising only the shoulders is not a jump).
+        if ankle_y is None:
+            self._history.clear()
+            self._frame_count += 1
+            return False
 
-            # Arm the jump when the legs stay bent
-            if self._is_crouched(landmarks):
-                self._crouch_frames += 1
-                if self._crouch_frames >= CROUCH_HOLD_FRAMES:
-                    self._crouch_baseline = shoulder_y
-                    ankle_baseline = self._ankle_midpoint_y(landmarks)
-                    self._ankle_baseline = (
-                        ankle_baseline if ankle_baseline is not None else shoulder_y
-                    )
-                    self._armed = True
-                    self._armed_frames = 0
-                    self._crouch_frames = 0
-            else:
-                self._crouch_frames = 0
+        # Compare against the shoulder/ankle position from JUMP_RISE_WINDOW
+        # frames ago. A real jump moves the whole body up fast, so the rise
+        # over the window exceeds the threshold; a slow drift (walking closer
+        # or away, growing on tiptoes) never produces a big delta in so few
+        # frames.
+        if len(self._history) == JUMP_RISE_WINDOW:
+            prev_shoulder_y, prev_ankle_y = self._history[0]
+            if (
+                shoulder_y < prev_shoulder_y - self._threshold
+                and ankle_y < prev_ankle_y - ANKLE_RISE_THRESHOLD
+            ):
+                self._history.clear()
+                self._cooldown_counter = self._cooldown
+                self._frame_count += 1
+                return True
 
+        self._history.append((shoulder_y, ankle_y))
         self._frame_count += 1
         return False
-
-    def _disarm(self) -> None:
-        """Clear the armed state back to IDLE."""
-        self._armed = False
-        self._armed_frames = 0
-        self._crouch_frames = 0
-        self._crouch_baseline = None
-        self._ankle_baseline = None
 
     @staticmethod
     def _has_shoulders(landmarks: Sequence[LandmarkPoint]) -> bool:
@@ -255,49 +246,11 @@ class JumpDetector:
             return None
         return (la[1] + ra[1]) / 2.0
 
-    @staticmethod
-    def _knee_angle(
-        hip: LandmarkPoint,
-        knee: LandmarkPoint,
-        ankle: LandmarkPoint,
-    ) -> Optional[float]:
-        """Return the angle (degrees) at the knee joint, or None if degenerate."""
-        if hip is None or knee is None or ankle is None:
-            return None
-        v1 = (hip[0] - knee[0], hip[1] - knee[1])
-        v2 = (ankle[0] - knee[0], ankle[1] - knee[1])
-        n1 = math.hypot(v1[0], v1[1])
-        n2 = math.hypot(v2[0], v2[1])
-        if n1 < 1e-6 or n2 < 1e-6:
-            return None
-        cos = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)))
-        return math.degrees(math.acos(cos))
-
-    @classmethod
-    def _is_crouched(cls, landmarks: Sequence[LandmarkPoint]) -> bool:
-        """True when both knees are bent below CROUCH_ANGLE_THRESHOLD."""
-        if len(landmarks) <= RIGHT_ANKLE:
-            return False
-        left = cls._knee_angle(
-            landmarks[LEFT_HIP],
-            landmarks[LEFT_KNEE],
-            landmarks[LEFT_ANKLE],
-        )
-        right = cls._knee_angle(
-            landmarks[RIGHT_HIP],
-            landmarks[RIGHT_KNEE],
-            landmarks[RIGHT_ANKLE],
-        )
-        if left is None or right is None:
-            return False
-        return (left + right) / 2.0 < CROUCH_ANGLE_THRESHOLD
-
     def reset(self) -> None:
-        """Clear the baseline, cooldown, and two-phase state on game restart."""
-        self._baseline_y = None
+        """Clear the history and cooldown on game restart."""
         self._cooldown_counter = 0
         self._frame_count = 0
-        self._disarm()
+        self._history.clear()
 
 
 class PlayerCharacter:
@@ -1233,41 +1186,12 @@ class GameEngine:
         )
 
     def _draw_hearts(self, frame: np.ndarray) -> None:
-        """Draw hearts for remaining lives in the top-right corner."""
+        """Draw the remaining lives as red hearts (gray when lost)."""
         for i in range(MAX_LIVES):
             color = HEART_COLOR if i < self._lives else (100, 100, 100)
-            cx = self.width - 30 - i * 25
+            cx = self.width - 35 - i * 28
             cy = 25
-            cv2.ellipse(
-                frame,
-                (cx, cy),
-                (10, 10),
-                0,
-                0,
-                360,
-                color,
-                -1,
-            )
-            cv2.ellipse(
-                frame,
-                (cx - 7, cy),
-                (5, 5),
-                0,
-                0,
-                360,
-                color,
-                -1,
-            )
-            cv2.ellipse(
-                frame,
-                (cx + 7, cy),
-                (5, 5),
-                0,
-                0,
-                360,
-                color,
-                -1,
-            )
+            draw_heart(frame, (cx, cy), 22, color)
 
     def _draw_hud(self, frame: np.ndarray) -> None:
         """Draw level, score, speed multiplier, and hearts on the frame."""

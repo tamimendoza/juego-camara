@@ -36,6 +36,7 @@ from .mario_game import (
     SKY_BLOCK_SIZE,
     SKY_BLOCK_COLOR,
     SKY_BLOCK_HEIGHT_RANGE,
+    MAX_LIVES,
     CLOUD_COLOR,
     CLOUD_SIZE_RANGE,
     SkyBlock,
@@ -49,6 +50,10 @@ SPEED_INCREMENT = 0.1  # additive speed multiplier increase per level
 
 # --- Graffiti placement ---
 GRAFFITI_BRICK_Y_OFFSET = 15  # pixels below ground_y for the graffiti baseline
+
+# Face variant runs at a higher camera resolution so a distant face keeps enough
+# pixels for FaceLandmarker to detect and track it reliably.
+FACE_RESOLUTION = (1280, 720)
 
 
 def _resource_path(*parts: str) -> str:
@@ -173,6 +178,7 @@ class MarioFaceGameEngine(MarioGameEngine):
 
     _FACE_CROP_RADIUS = 40
     _FACE_PREVIEW_RADIUS = 25
+    _FACE_HOLD_FRAMES = 5  # keep the last valid crop across brief detection losses
 
     def __init__(
         self,
@@ -181,8 +187,9 @@ class MarioFaceGameEngine(MarioGameEngine):
         sound_manager,
         face_landmarker: FaceLandmarkerDetector,
         face_cropper: FaceCropper,
+        score_store=None,
     ):
-        super().__init__(width, height, sound_manager)
+        super().__init__(width, height, sound_manager, score_store=score_store)
         self._player = MarioFaceCharacter(
             self._player.x, self._player.ground_y,
         )
@@ -190,15 +197,31 @@ class MarioFaceGameEngine(MarioGameEngine):
         self._face_cropper = face_cropper
         self._face_image: np.ndarray = None
         self._face_mask: np.ndarray = None
+        self._face_hold_count = 0  # consecutive frames holding a stale crop
         self._sky_block_spawn_level = 1  # level at which the last sky block spawned
+        self._state = self.NAME_ENTRY
 
     @property
     def speed(self) -> float:
         """Additive speed multiplier: ``BASE_SPEED * (1 + 0.1 * (level - 1))``."""
         return BASE_SPEED * (1 + SPEED_INCREMENT * (self._obstacle_manager.level - 1))
 
+    def handle_key(self, key: int) -> None:
+        """Handle keyboard input for the Face variant.
+
+        ENTER from GAME_OVER returns to the name-entry screen instead of
+        restarting directly; all other keys delegate to the base engine.
+        """
+        if self._state == self.GAME_OVER and key in (13, 10):
+            self.reset()
+            return
+        super().handle_key(key)
+
     def detect_face(self, rgb_frame: np.ndarray, bgr_frame: np.ndarray) -> None:
         """Run FaceLandmarker detection and crop the face from the camera frame.
+
+        Keeps the last valid crop for up to ``_FACE_HOLD_FRAMES`` consecutive
+        frames when detection briefly fails, so the face does not flicker.
 
         Args:
             rgb_frame: RGB frame from the camera (height x width x 3).
@@ -214,9 +237,13 @@ class MarioFaceGameEngine(MarioGameEngine):
                 self._FACE_CROP_RADIUS,
                 face_bbox=face_bbox,
             )
+            self._face_hold_count = 0
+        elif self._face_hold_count < self._FACE_HOLD_FRAMES:
+            self._face_hold_count += 1
         else:
             self._face_image = None
             self._face_mask = None
+            self._face_hold_count = 0
 
     def update(
         self,
@@ -235,9 +262,15 @@ class MarioFaceGameEngine(MarioGameEngine):
         super().update(points, connections)
 
     def reset(self) -> None:
-        """Reset game state and the sky block spawn milestone."""
+        """Reset game state, the sky block spawn milestone, and the name buffer.
+
+        The Face variant returns to the NAME_ENTRY state (instead of MENU) with
+        an empty name buffer, so the player is prompted before the next game.
+        """
         super().reset()
         self._sky_block_spawn_level = 1
+        self._state = self.NAME_ENTRY
+        self._player_name = ""
 
     def _render_game(self, frame: np.ndarray, connections: list) -> None:
         """Render the playing game state with face overlay on the character.
@@ -311,6 +344,41 @@ class MarioFaceGameEngine(MarioGameEngine):
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
         )
 
+    def _render_name_entry(self, frame: np.ndarray) -> None:
+        """Render the name-entry screen with the name being typed."""
+        frame[:] = SKY_COLOR
+        self._render_static_environment(
+            frame,
+            graffiti_y=self._ground_y + GRAFFITI_BRICK_Y_OFFSET,
+        )
+
+        overlay = frame.copy()
+        overlay[:] = (overlay * 0.5).astype(overlay.dtype)
+        frame[:] = overlay
+
+        cx = self.width // 2
+        cv2.putText(
+            frame, "MARIO FACE JUMP",
+            (cx - 120, self.height // 2 - 80),
+            cv2.FONT_HERSHEY_SIMPLEX, 1.0, HUD_COLOR, 2, cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, "Enter your name:",
+            (cx - 90, self.height // 2 - 20),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, HUD_COLOR, 1, cv2.LINE_AA,
+        )
+        name_text = self._player_name + "_"
+        cv2.putText(
+            frame, name_text,
+            (cx - 90, self.height // 2 + 30),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, "Press ENTER to start",
+            (cx - 100, self.height // 2 + 80),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
+        )
+
     def _draw_face_preview(self, frame: np.ndarray) -> None:
         """Draw a small live face preview circle on the bricks at the lower right.
 
@@ -330,11 +398,11 @@ class MarioFaceGameEngine(MarioGameEngine):
             cv2.circle(frame, center, radius, HUD_COLOR, 1, cv2.LINE_AA)
 
     def _update_sky_blocks(self, current_speed: float) -> None:
-        """Update sky blocks: move, grant coins on collect, spawn one per level up.
+        """Update sky blocks: move, restore a life on collect, spawn one per level up.
 
-        Unlike the base engine, collecting a sky block grants +1 coin (never a
-        life), and a single block spawns each time the level rises (every 5
-        obstacles passed) instead of on a random timer.
+        Collecting a sky block restores +1 life (heart) up to ``MAX_LIVES``,
+        matching the base engine; a single block spawns each time the level
+        rises (every 5 obstacles passed) instead of on a random timer.
         """
         for block in self._sky_blocks:
             block.update()
@@ -342,8 +410,9 @@ class MarioFaceGameEngine(MarioGameEngine):
         char_bbox = self._player.bounding_box
         for block in self._sky_blocks:
             if not block.collected and block.check_collision(char_bbox):
-                self._coins += 1
-                self._sound_manager.play_coin()
+                if self._lives < MAX_LIVES:
+                    self._lives += 1
+                    self._sound_manager.play_coin()
                 block.collected = True
 
         self._sky_blocks = [
@@ -401,22 +470,27 @@ class MarioFaceGameEngine(MarioGameEngine):
             self._clouds.append(cloud)
 
     def _draw_hud(self, frame: np.ndarray) -> None:
-        """Draw coins, level, additive speed multiplier, and hearts."""
+        """Draw coins, level, additive speed multiplier, player name, and hearts."""
         speed_mult = 1 + SPEED_INCREMENT * (self._obstacle_manager.level - 1)
         self._draw_hearts(frame)
         cv2.putText(
-            frame, f"Monedas: {self._coins}",
+            frame, f"Jugador: {self._player_name}",
             (10, 25),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, HUD_COLOR, 1, cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, f"Monedas: {self._coins}",
+            (10, 48),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, HUD_COLOR, 1, cv2.LINE_AA,
         )
         cv2.putText(
             frame, f"Nivel: {self._obstacle_manager.level}",
-            (10, 48),
+            (10, 70),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
         )
         cv2.putText(
             frame, f"Velocidad: {speed_mult:.1f}x",
-            (10, 70),
+            (10, 92),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
         )
 
@@ -452,8 +526,26 @@ class MarioFaceGameEngine(MarioGameEngine):
             (self.width // 2 - 40, self.height // 2 + 100),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
         )
+
+        # Top 5 leaderboard (ordered by coins, cached at game over)
+        title_y = self.height // 2 + 150
         cv2.putText(
-            frame, "Press SPACE to restart",
-            (self.width // 2 - 90, self.height // 2 + 130),
+            frame, "TOP 5",
+            (self.width // 2 - 30, title_y),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1, cv2.LINE_AA,
+        )
+        for i, (position, name, coins, level) in enumerate(self._leaderboard):
+            row_y = title_y + 30 + i * 24
+            row = f"{position}. {name}  {coins} monedas  N{level}"
+            cv2.putText(
+                frame, row,
+                (self.width // 2 - 120, row_y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, HUD_COLOR, 1, cv2.LINE_AA,
+            )
+
+        enter_y = title_y + 30 + len(self._leaderboard) * 24 + 20
+        cv2.putText(
+            frame, "Press ENTER to continue",
+            (self.width // 2 - 100, enter_y),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
         )

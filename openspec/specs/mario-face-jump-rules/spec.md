@@ -1,10 +1,11 @@
+# mario-face-jump-rules Specification
+
 ## Purpose
-
 Defines the gameplay rules of the Mario Face Jump variant: level progression every
-5 obstacles, coin accumulation from obstacles and sky squares, and an additive speed
-multiplier that increases by 0.1 per level.
+5 obstacles, coin accumulation from obstacles passed, lives restored by sky squares,
+and an additive speed multiplier that increases by 0.1 per level.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Level up every 5 obstacles
 
@@ -38,11 +39,10 @@ character, independent of sky squares.
 - **THEN** the coin counter increments by 1
 - **AND** a coin sound effect plays
 
-#### Scenario: Coin counter accumulates all sources
+#### Scenario: Coin counter accumulates obstacles passed
 
-- **WHEN** the character passes obstacles and collects sky squares
-- **THEN** the coin counter accumulates 1 coin per obstacle passed plus 1 coin per
-  sky square collected
+- **WHEN** the character passes obstacles during a game
+- **THEN** the coin counter accumulates 1 coin per obstacle passed
 
 ### Requirement: Additive speed multiplier
 

@@ -26,26 +26,26 @@ obstacles successfully passed by the character.
 - **THEN** a new block spawns at the right edge when the next 5-obstacle milestone
   is reached
 
-### Requirement: Collecting a block grants a coin
+### Requirement: Collecting a block restores a life
 
-The system SHALL increment the coin counter by 1 when the character touches a sky
-block.
+The system SHALL restore 1 life when the character touches a sky block, up to the
+maximum number of lives.
 
 #### Scenario: Character touches block while jumping
 
 - **WHEN** the character's bounding box overlaps a sky block's bounding box during
   a jump
-- **THEN** the system increments the coin counter by 1
+- **THEN** the system increments the player's lives by 1 (if below the maximum)
 - **AND** the block disappears
 - **AND** a coin sound effect plays
-- **AND** no life is added when a block is collected
+- **AND** no coin is added when a block is collected
 
-### Requirement: Blocks hold only 1 coin each
+### Requirement: Blocks restore a single life each
 
-Each sky block SHALL contain exactly 1 coin. After collection, the block is removed.
+Each sky block SHALL restore at most 1 life. After collection, the block is removed.
 
 #### Scenario: Block disappears after collection
 
 - **WHEN** a sky block is collected by the character
 - **THEN** the block is removed from the game
-- **AND** no additional coins can be obtained from that same block
+- **AND** no additional lives can be restored by that same block

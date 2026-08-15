@@ -22,16 +22,19 @@ Usage:
 """
 
 import argparse
+import atexit
 import sys
 
 import cv2
 import numpy as np
 
 from ...core.camera import Camera
-from .mario_face_game import MarioFaceGameEngine, RESOLUTION, WINDOW_NAME
+from .mario_face_game import MarioFaceGameEngine, FACE_RESOLUTION, WINDOW_NAME
 from ...core.face_landmarker import FaceLandmarkerDetector
 from ...core.face_crop import FaceCropper
+from ...core.notification_manager import NotificationManager
 from ...core.pose_detector import PoseDetector
+from ...core.score_store import ScoreStore
 from ...core.sound_manager import SoundManager
 from ...core.utils import rgb_to_mp_image
 
@@ -49,7 +52,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    width, height = RESOLUTION
+    width, height = FACE_RESOLUTION
 
     try:
         camera = Camera(source=args.camera, width=width, height=height)
@@ -86,12 +89,21 @@ def main() -> int:
 
     face_cropper = FaceCropper()
 
-    engine = MarioFaceGameEngine(width, height, SoundManager(), face_landmarker, face_cropper)
+    score_store = ScoreStore()
+
+    engine = MarioFaceGameEngine(
+        width, height, SoundManager(), face_landmarker, face_cropper,
+        score_store=score_store,
+    )
     connections = list(detector.connections)
 
     print(f"Juego Camara — Mario Face Jump Game (camera /dev/video{args.camera})")
     print("Your real face replaces Mario's head! Physically jump to make Mario jump and clear obstacles!")
     print("Controls: SPACE = start/restart | q = quit")
+
+    notification_manager = NotificationManager()
+    notification_manager.activate()
+    atexit.register(notification_manager.deactivate)
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
@@ -131,6 +143,7 @@ def main() -> int:
         camera.release()
         detector.close()
         engine.close()
+        notification_manager.deactivate()
         cv2.destroyAllWindows()
 
     return 0

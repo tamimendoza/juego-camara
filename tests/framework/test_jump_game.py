@@ -23,6 +23,7 @@ from src.framework.jump_game import (
     HEART_COLOR,
     INVINCIBILITY_THRESHOLD,
     JUMP_COOLDOWN,
+    JUMP_RISE_WINDOW,
     JUMP_THRESHOLD,
     JumpDetector,
     LEFT_SHOULDER,
@@ -119,8 +120,11 @@ def make_standing_landmarks():
 
 
 def make_jumping_landmarks(jump_height=80):
-    """Shoulders raised above baseline by jump_height."""
-    return make_landmarks(shoulder_y=240 - jump_height)
+    """Whole body raised: shoulders AND ankles rise by jump_height."""
+    return make_landmarks(
+        shoulder_y=240 - jump_height,
+        ankle_y=380 - jump_height,
+    )
 
 
 # --- JumpDetector Tests ------------------------------------------------------
@@ -135,21 +139,49 @@ class TestJumpDetector:
         assert result is False
 
     def test_jump_when_shoulders_rise_above_threshold(self):
-        """Shoulders rising above the 30 px threshold triggers a jump."""
+        """A whole-body rise above the 30 px threshold triggers a jump."""
         detector = JumpDetector()
         landmarks = make_standing_landmarks()
-        # Establish baseline
-        detector.update(landmarks)
+        # Fill the rise window with the standing pose
+        for _ in range(JUMP_RISE_WINDOW):
+            detector.update(landmarks)
         # Now jump: shoulders rise by 80 px
         jumping = make_jumping_landmarks(jump_height=80)
         result = detector.update(jumping)
         assert result is True
 
+    def test_jump_fires_without_crouch_front_facing(self):
+        """A front-facing jump (whole body rises, no crouch) fires.
+
+        Regression test: the previous detector gated jumps behind a knee-bend
+        (crouch) gesture that players facing the camera can't reliably produce,
+        so a normal jump never fired. A front-facing jump still translates the
+        whole body up, so it must be detected directly.
+        """
+        detector = JumpDetector()
+        standing = make_standing_landmarks()
+        for _ in range(JUMP_RISE_WINDOW):
+            detector.update(standing)
+        # Jump straight up: shoulders AND ankles rise together
+        jumping = make_jumping_landmarks(jump_height=80)
+        assert detector.update(jumping) is True
+
+    def test_no_jump_when_only_shoulders_rise(self):
+        """Raising the shoulders alone (ankles planted) does not trigger."""
+        detector = JumpDetector()
+        standing = make_standing_landmarks()
+        for _ in range(JUMP_RISE_WINDOW):
+            detector.update(standing)
+        # Shoulders rise 80 px but ankles stay planted (arm raise / shrug)
+        arms_up = make_landmarks(shoulder_y=240 - 80, ankle_y=380)
+        assert detector.update(arms_up) is False
+
     def test_no_jump_when_shoulders_rise_below_threshold(self):
         """Shoulders rising below the 30 px threshold does not trigger a jump."""
         detector = JumpDetector()
         landmarks = make_standing_landmarks()
-        detector.update(landmarks)  # establish baseline
+        for _ in range(JUMP_RISE_WINDOW):
+            detector.update(landmarks)
         # Shoulders rise by only 20 px (below the 30 px threshold)
         almost = make_jumping_landmarks(jump_height=20)
         result = detector.update(almost)
@@ -159,7 +191,8 @@ class TestJumpDetector:
         """After a jump, cooldown prevents another jump for N frames."""
         detector = JumpDetector(cooldown=5)
         base = make_standing_landmarks()
-        detector.update(base)  # baseline
+        for _ in range(JUMP_RISE_WINDOW):
+            detector.update(base)
         jump = make_jumping_landmarks(jump_height=80)
         assert detector.update(jump) is True  # first jump fires
 
@@ -182,36 +215,38 @@ class TestJumpDetector:
         result = detector.update(landmarks)
         assert result is False
 
-    def test_baseline_adapts_to_position_change(self):
-        """Standing baseline slowly adapts (EMA) to gradual position shifts."""
-        detector = JumpDetector(cooldown=0, ema_alpha=0.5)
-        # Establish at y=200
-        lands1 = make_landmarks(shoulder_y=200)
-        detector.update(lands1)  # baseline = 200
-
-        # Gradually shift down to y=240 (4 frames, alpha=0.5)
-        # baseline should converge toward 240, so a small rise won't trigger
-        lands2 = make_landmarks(shoulder_y=240)
-        # After several updates, baseline approaches 240
-        for _ in range(10):
-            detector.update(lands2)
-
-        # Now rising by 30 from 240 baseline shouldn't trigger (baseline ~240)
-        # But since we've moved, baseline adapts
-        # The key assertion: baseline is closer to 240 than to 200
-        assert detector._baseline_y is not None
-        # Baseline should have moved toward 240
-        assert detector._baseline_y > 200
-
-    def test_reset_clears_baseline(self):
-        """reset() clears the baseline so the next update starts fresh."""
+    def test_missing_ankles_no_trigger(self):
+        """If ankles are not visible (None), no jump is triggered."""
         detector = JumpDetector()
-        detector.update(make_standing_landmarks())
-        assert detector._baseline_y is not None
+        for _ in range(JUMP_RISE_WINDOW):
+            detector.update(make_standing_landmarks())
+        jumping = make_jumping_landmarks(jump_height=80)
+        jumping[27] = None  # left ankle occluded
+        assert detector.update(jumping) is False
+
+    def test_slow_drift_does_not_trigger(self):
+        """A slow gradual rise (e.g., walking away) never fires a jump."""
+        detector = JumpDetector()
+        fired = False
+        for frame in range(30):
+            shoulder_y = 300 - 2 * frame
+            ankle_y = 440 - 2 * frame
+            lands = make_landmarks(shoulder_y=shoulder_y, ankle_y=ankle_y)
+            if detector.update(lands):
+                fired = True
+        assert fired is False
+
+    def test_reset_clears_state(self):
+        """reset() clears the history and cooldown so the next update starts fresh."""
+        detector = JumpDetector()
+        standing = make_standing_landmarks()
+        for _ in range(JUMP_RISE_WINDOW):
+            detector.update(standing)
+        assert len(detector._history) == JUMP_RISE_WINDOW
 
         detector.reset()
-        assert detector._baseline_y is None
         assert detector._cooldown_counter == 0
+        assert len(detector._history) == 0
 
     def test_short_landmark_list_no_crash(self):
         """A landmark list shorter than 13 entries does not crash."""
@@ -219,12 +254,12 @@ class TestJumpDetector:
         result = detector.update([(100, 100), (200, 200)])  # too short
         assert result is False
 
-    def test_first_call_establishes_baseline(self):
-        """First update with valid shoulders sets the baseline without triggering."""
+    def test_standing_still_never_fires(self):
+        """Standing still at the same position never triggers a jump."""
         detector = JumpDetector()
-        result = detector.update(make_standing_landmarks())
-        assert result is False
-        assert detector._baseline_y is not None
+        standing = make_standing_landmarks()
+        for _ in range(30):
+            assert detector.update(standing) is False
 
     def test_frame_count_increments(self):
         """update() increments the internal frame counter."""
@@ -696,15 +731,15 @@ class TestGameEngine:
         engine._obstacle_manager._passed_count = 4
         assert engine.speed == pytest.approx(BASE_SPEED)
 
-        # 5 passed → ×1.10
+        # 5 passed → ×SPEED_MULTIPLIER
         engine._obstacle_manager._passed_count = 5
         assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER)
 
-        # 10 passed → ×1.21
+        # 10 passed → ×SPEED_MULTIPLIER^2
         engine._obstacle_manager._passed_count = 10
         assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER ** 2)
 
-        # 17 passed → ×1.331 (17 // 5 = 3)
+        # 17 passed → ×SPEED_MULTIPLIER^3 (17 // 5 = 3)
         engine._obstacle_manager._passed_count = 17
         assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER ** 3)
 
@@ -773,45 +808,46 @@ class TestGameEngine:
         assert engine.state == GameEngine.GAME_OVER
 
     def test_jump_detected_during_play(self):
-        """A jump gesture triggers the character to jump during PLAYING."""
+        """A whole-body rise triggers the character to jump during PLAYING."""
         engine = self._make_engine()
         engine.start()
 
-        # Establish baseline
+        # Fill the detector's rise window with the standing pose
         standing = make_standing_landmarks()
-        engine.update(standing, MOCK_CONNECTIONS)
+        for _ in range(JUMP_RISE_WINDOW):
+            engine.update(standing, MOCK_CONNECTIONS)
         assert engine._player.on_ground is True
 
-        # Jump: shoulders rise 80 px above baseline
+        # Jump: shoulders and ankles rise 80 px above the standing pose
         jumping = make_jumping_landmarks(jump_height=80)
         engine.update(jumping, MOCK_CONNECTIONS)
         assert engine._player.on_ground is False
 
     def test_double_jump_detected_during_play(self):
-        """A second jump gesture while airborne triggers a double jump."""
+        """A second whole-body rise while airborne triggers a double jump."""
         engine = self._make_engine()
         engine.start()
 
-        # Establish baseline
         standing = make_standing_landmarks()
-        engine.update(standing, MOCK_CONNECTIONS)
-
-        # First jump
         jumping = make_jumping_landmarks(jump_height=80)
+
+        # Fill the rise window and fire the first jump
+        for _ in range(JUMP_RISE_WINDOW):
+            engine.update(standing, MOCK_CONNECTIONS)
         engine.update(jumping, MOCK_CONNECTIONS)
         assert engine._player.on_ground is False
         assert engine._player._jump_count == 1
 
-        # Wait for cooldown to expire
-        for _ in range(JUMP_COOLDOWN + 1):
+        # Wait for cooldown to expire and refill the window
+        for _ in range(JUMP_COOLDOWN + JUMP_RISE_WINDOW):
             engine.update(standing, MOCK_CONNECTIONS)
 
-        # Second jump gesture (shoulders rise again) — triggers double jump
+        # Jump again while airborne — triggers double jump
         engine.update(jumping, MOCK_CONNECTIONS)
         assert engine._player._jump_count == 2
 
         # Third jump gesture — should NOT trigger (max 2 jumps)
-        for _ in range(JUMP_COOLDOWN + 1):
+        for _ in range(JUMP_COOLDOWN + JUMP_RISE_WINDOW):
             engine.update(standing, MOCK_CONNECTIONS)
         engine.update(jumping, MOCK_CONNECTIONS)
         assert engine._player._jump_count == 2

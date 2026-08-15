@@ -4,11 +4,13 @@
 Squares appear in the sky. When the character jumps and touches a sky block, the
 player gains 1 life (up to a maximum of 3). A coin sound effect plays. Each sky
 block holds only 1 life and disappears after being collected.
+
 ## Requirements
 ### Requirement: Sky blocks appear in the sky
 
 The system SHALL render square blocks at various positions in the upper portion of
-the screen (above the character's ground level).
+the screen (above the character's ground level). One square appears for every 5
+obstacles successfully passed by the character.
 
 #### Scenario: Blocks spawn in the sky
 
@@ -17,34 +19,39 @@ the screen (above the character's ground level).
   ground_y)
 - **AND** blocks move leftward at the current game speed
 
+#### Scenario: One block spawns per 5 obstacles passed
+
+- **WHEN** the character passes the 5th, 10th, 15th, ... obstacle (a multiple of 5)
+- **THEN** a new square block spawns in the sky region (y < ground_y)
+- **AND** only one block is spawned per 5-obstacle milestone
+- **AND** the block moves leftward at the current game speed
+
 #### Scenario: Blocks respawn over time
 
 - **WHEN** a block moves off the left edge of the screen or is collected
-- **THEN** a new block spawns at the right edge after a random interval
+- **THEN** a new block spawns at the right edge when the next 5-obstacle milestone
+  is reached
 
-### Requirement: Collecting a block grants a life
+### Requirement: Collecting a block restores a life
 
-The system SHALL increment the life count by 1 (up to max 3) when the character
-touches a sky block.
+The system SHALL restore 1 life when the character touches a sky block, up to the
+maximum number of lives.
 
 #### Scenario: Character touches block while jumping
 
 - **WHEN** the character's bounding box overlaps a sky block's bounding box during
   a jump
-- **THEN** the system increments the life count by 1 (capped at 3)
+- **THEN** the system increments the player's lives by 1 (if below the maximum)
 - **AND** the block disappears
 - **AND** a coin sound effect plays
-- **AND** if the player already has 3 lives, no life is added but the coin sound
-  still plays
+- **AND** no coin is added when a block is collected
 
-### Requirement: Blocks hold only 1 life each
+### Requirement: Blocks restore a single life each
 
-Each sky block SHALL contain exactly 1 life. After collection, the block is
-removed.
+Each sky block SHALL restore at most 1 life. After collection, the block is removed.
 
 #### Scenario: Block disappears after collection
 
 - **WHEN** a sky block is collected by the character
 - **THEN** the block is removed from the game
-- **AND** no additional lives can be obtained from that same block
-
+- **AND** no additional lives can be restored by that same block

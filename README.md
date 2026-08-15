@@ -155,9 +155,6 @@ python3 -m pytest -q
 
 Unit tests cover the core helpers, the jump-game framework, and each game
 engine; they run without a camera or model files using mock landmark data.
-A small set of jump-detection tests predate the current two-phase
-(crouch-jump) detector and fail against it; they are unrelated to this
-architecture and are left as known regressions to fix in the tests.
 
 ## Controls
 

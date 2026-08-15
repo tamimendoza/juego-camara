@@ -74,12 +74,12 @@ multiplicador aditivo `1 + 0.1*(level-1)`.
 **Decisión:** Añadir `self._coins = 0` a `MarioGameEngine.__init__` y `reset()` (inofensivo para
 Mario Bros base). En `_update_playing` (donde ya se reproduce `play_coin` al pasar un obstáculo)
 se suma `self._coins += 1`. El `MarioFaceGameEngine`:
-- Sobrescribe `_update_sky_blocks`/`_spawn_sky_block`: al recolectar un cuadrado suma
-  `self._coins += 1`, reproduce `play_coin`, marca `collected`, y el spawn se ata al hito:
-  cuando `level` sube (cada 5 obstáculos) se genera **un** cuadrado (se reemplaza el spawn por
-  temporizador aleatorio).
-- Sobrescribe `_draw_hud` para mostrar `Monedas: {self._coins}` (acumulado) y `_render_game_over`
-  con el total de monedas.
+- Sobrescribe `_update_sky_blocks`/`_spawn_sky_block`: al recolectar un cuadrado restaura
+  `self._lives += 1` si está por debajo de `MAX_LIVES`, reproduce `play_coin`, marca
+  `collected`, y el spawn se ata al hito: cuando `level` sube (cada 5 obstáculos) se genera
+  **un** cuadrado (se reemplaza el spawn por temporizador aleatorio). No otorga monedas.
+- Sobrescribe `_draw_hud` para mostrar `Monedas: {self._coins}` (acumulado de obstáculos) y
+  `_render_game_over` con el total de monedas.
 - El cuadrado del cielo se dibuja con el sprite `sprites/SMW_v-ram-yane_QuestionMarkBlock.png`
   (bloque de interrogación) escalado a `SKY_BLOCK_SIZE`, para distinguirlo de un bloque normal.
   Si el sprite no se puede cargar en runtime, fallback al rectángulo amarillo actual.

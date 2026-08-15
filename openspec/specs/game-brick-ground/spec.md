@@ -28,3 +28,10 @@ ground.
 - **AND** the text is styled to resemble graffiti (white or bright color with
   outline for readability)
 
+#### Scenario: Graffiti text sits on the bricks
+
+- **WHEN** the game is in PLAYING state in the Mario Face Jump variant
+- **THEN** the text "Familia Mendoza Silva" is drawn over the brick area,
+  below the ground line (`ground_y`)
+- **AND** the text does not overlap the sky region above the ground
+

@@ -11,6 +11,9 @@ venv/
 # MediaPipe model file (downloaded at runtime by run.sh)
 models/
 
+# Local score database (player scores persisted at runtime)
+scores*.db
+
 # IDE
 .vscode/
 .idea/

@@ -46,10 +46,12 @@ from ...framework.jump_game import (
     JumpDetector,
     GRAVITY,
     JUMP_VELOCITY,
+    JUMP_RISE_WINDOW,
     BASE_SPEED,
     SPEED_MULTIPLIER,
     MAX_LIVES,
     HEART_COLOR,
+    draw_heart,
     SKY_BLOCK_SIZE,
     SKY_BLOCK_COLOR,
     SKY_BLOCK_SPAWN_INTERVAL,
@@ -86,7 +88,6 @@ MAX_JUMP_OFFSET = max(  # highest jump offset that keeps the character on screen
 # --- Jump detection constants ---
 JUMP_THRESHOLD = 30.0
 JUMP_COOLDOWN = 8
-BASELINE_EMA_ALPHA = 0.05
 
 # --- Double jump constants ---
 MAX_JUMPS = 2
@@ -98,6 +99,9 @@ LEFT_SHOULDER = 11
 RIGHT_SHOULDER = 12
 LEFT_HIP = 23
 RIGHT_HIP = 24
+
+# --- Name entry constants ---
+MAX_NAME_LENGTH = 15  # max characters in the player's name buffer
 
 # --- Level / spacing constants ---
 LEVEL_INTERVAL = 5  # obstacles passed before level increments and gaps tighten
@@ -576,8 +580,15 @@ class MarioGameEngine:
     MENU = 0
     PLAYING = 1
     GAME_OVER = 2
+    NAME_ENTRY = 3
 
-    def __init__(self, width: int, height: int, sound_manager: Optional[SoundManager] = None):
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        sound_manager: Optional[SoundManager] = None,
+        score_store=None,
+    ):
         self.width = width
         self.height = height
         self._ground_y = int(height * GROUND_Y_RATIO)
@@ -587,9 +598,9 @@ class MarioGameEngine:
         self._jump_detector = JumpDetector(
             threshold=JUMP_THRESHOLD,
             cooldown=JUMP_COOLDOWN,
-            ema_alpha=BASELINE_EMA_ALPHA,
         )
         self._sound_manager = sound_manager if sound_manager is not None else SoundManager()
+        self._score_store = score_store
 
         self._state = self.MENU
         self._frame_count = 0
@@ -601,6 +612,10 @@ class MarioGameEngine:
         # Coin counter (accumulated across obstacles and sky blocks)
         self._coins = 0
 
+        # Player name entry and cached leaderboard
+        self._player_name = ""
+        self._leaderboard = []
+
         # Sky blocks (life-restoring blocks in the sky)
         self._sky_blocks: List[SkyBlock] = []
         self._sky_block_timer = 0
@@ -611,6 +626,16 @@ class MarioGameEngine:
 
         # Invincibility theme state
         self._invincibility_active = False
+
+    @property
+    def player_name(self) -> str:
+        """Current player's name (set at name entry)."""
+        return self._player_name
+
+    @property
+    def leaderboard(self) -> list:
+        """Cached Top 5 leaderboard rows, each (position, name, coins, level)."""
+        return self._leaderboard
 
     @property
     def lives(self) -> int:
@@ -628,7 +653,12 @@ class MarioGameEngine:
 
     @property
     def state_name(self) -> str:
-        return {self.MENU: "MENU", self.PLAYING: "PLAYING", self.GAME_OVER: "GAME_OVER"}.get(
+        return {
+            self.MENU: "MENU",
+            self.PLAYING: "PLAYING",
+            self.GAME_OVER: "GAME_OVER",
+            self.NAME_ENTRY: "NAME_ENTRY",
+        }.get(
             self._state, "UNKNOWN"
         )
 
@@ -652,6 +682,18 @@ class MarioGameEngine:
         self._state = self.PLAYING
         self._sound_manager.play_background_music()
 
+    def _begin_playing(self) -> None:
+        """Start a game from NAME_ENTRY, keeping the entered player name.
+
+        The gameplay state is reset fresh (obstacles, clouds, lives, coins),
+        then the entered name is restored and PLAYING begins.
+        """
+        name = self._player_name.strip()
+        self.reset()
+        self._player_name = name
+        self._state = self.PLAYING
+        self._sound_manager.play_background_music()
+
     def reset(self) -> None:
         """Reset all game state to initial values."""
         self._player.reset()
@@ -672,6 +714,21 @@ class MarioGameEngine:
         self._invincibility_active = False
         self._sound_manager.stop_invincibility_theme()
 
+        # Reset name buffer and cached leaderboard
+        self._player_name = ""
+        self._leaderboard = []
+
+    def _save_score(self) -> None:
+        """Persist the current player's best score and cache the Top 5.
+
+        Only writes when a score store is configured and a player name is set.
+        """
+        if self._score_store is not None and self._player_name:
+            self._score_store.upsert_best(
+                self._player_name, self._coins, self.level
+            )
+            self._leaderboard = self._score_store.top_scores(5)
+
     def update(
         self,
         landmarks: Optional[Sequence[LandmarkPoint]] = None,
@@ -681,6 +738,9 @@ class MarioGameEngine:
         self._frame_count += 1
 
         if self._state == self.MENU:
+            return
+
+        if self._state == self.NAME_ENTRY:
             return
 
         if self._state == self.PLAYING:
@@ -751,6 +811,7 @@ class MarioGameEngine:
             else:
                 self._sound_manager.play_game_over()
                 self._state = self.GAME_OVER
+                self._save_score()
 
         # 10. Decrement level-up timer
         if self._level_up_timer > 0:
@@ -839,6 +900,8 @@ class MarioGameEngine:
         """Render the current game state onto the frame."""
         if self._state == self.MENU:
             self._render_menu(frame)
+        elif self._state == self.NAME_ENTRY:
+            self._render_name_entry(frame)
         elif self._state == self.PLAYING:
             self._render_game(frame, connections)
         elif self._state == self.GAME_OVER:
@@ -967,6 +1030,10 @@ class MarioGameEngine:
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
         )
 
+    def _render_name_entry(self, frame: np.ndarray) -> None:
+        """Render the name-entry prompt (base fallback; Face variant overrides)."""
+        self._render_menu(frame)
+
     def _render_game_over(self, frame: np.ndarray, connections: Sequence[tuple]) -> None:
         """Render game over screen (frozen game frame + overlay)."""
         self._render_game(frame, connections)
@@ -1015,41 +1082,12 @@ class MarioGameEngine:
         )
 
     def _draw_hearts(self, frame: np.ndarray) -> None:
-        """Draw hearts for remaining lives in the top-right corner."""
+        """Draw the remaining lives as red hearts (gray when lost)."""
         for i in range(MAX_LIVES):
             color = HEART_COLOR if i < self._lives else (100, 100, 100)
-            cx = self.width - 30 - i * 25
+            cx = self.width - 35 - i * 28
             cy = 25
-            cv2.ellipse(
-                frame,
-                (cx, cy),
-                (10, 10),
-                0,
-                0,
-                360,
-                color,
-                -1,
-            )
-            cv2.ellipse(
-                frame,
-                (cx - 7, cy),
-                (5, 5),
-                0,
-                0,
-                360,
-                color,
-                -1,
-            )
-            cv2.ellipse(
-                frame,
-                (cx + 7, cy),
-                (5, 5),
-                0,
-                0,
-                360,
-                color,
-                -1,
-            )
+            draw_heart(frame, (cx, cy), 22, color)
 
     def _draw_hud(self, frame: np.ndarray) -> None:
         """Draw score, level, speed, and hearts on the frame."""
@@ -1073,6 +1111,10 @@ class MarioGameEngine:
 
     def handle_key(self, key: int) -> None:
         """Handle keyboard input for game control."""
+        if self._state == self.NAME_ENTRY:
+            self._handle_name_entry_key(key)
+            return
+
         if key == ord(" "):
             if self._state == self.MENU:
                 self.start()
@@ -1081,7 +1123,21 @@ class MarioGameEngine:
         elif key == ord("q") or key == 27:
             pass  # handled by caller for exit
 
+    def _handle_name_entry_key(self, key: int) -> None:
+        """Handle text input while in the NAME_ENTRY state."""
+        if key == 8:  # BACKSPACE
+            self._player_name = self._player_name[:-1]
+        elif key in (13, 10):  # ENTER
+            if self._player_name.strip():
+                self._begin_playing()
+            # Empty name: stay in NAME_ENTRY
+        elif 32 <= key <= 126 and len(self._player_name) < MAX_NAME_LENGTH:
+            self._player_name += chr(key)
+        # q / ESC are handled by the caller for exit
+
     def close(self) -> None:
-        """Clean up resources (sound manager)."""
+        """Clean up resources (sound manager and score store)."""
         self._sound_manager.stop_background_music()
         self._sound_manager.close()
+        if self._score_store is not None:
+            self._score_store.close()

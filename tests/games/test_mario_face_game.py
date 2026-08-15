@@ -26,6 +26,7 @@ from src.games.mario.mario_game import (
     GROUND_Y_RATIO,
     INVINCIBILITY_THRESHOLD,
     JUMP_COOLDOWN,
+    JUMP_RISE_WINDOW,
     JUMP_THRESHOLD,
     LEFT_SHOULDER,
     MAX_JUMPS,
@@ -120,7 +121,11 @@ def make_standing_landmarks():
 
 
 def make_jumping_landmarks(jump_height=80):
-    return make_landmarks(shoulder_y=240 - jump_height)
+    """Whole body raised: shoulders AND ankles rise by jump_height."""
+    return make_landmarks(
+        shoulder_y=240 - jump_height,
+        ankle_y=380 - jump_height,
+    )
 
 
 def make_face_landmarks(nose_x=320, nose_y=240, width=WIDTH, height=HEIGHT):
@@ -561,10 +566,19 @@ class TestMarioFaceGameEngine:
         )
         return engine
 
-    def test_initial_state_is_menu(self):
-        """Engine starts in MENU state."""
+    def _start(self, engine, name="Player"):
+        """Type a name and confirm with ENTER to begin playing."""
+        for ch in name:
+            engine.handle_key(ord(ch))
+        engine.handle_key(13)
+        assert engine.state == MarioGameEngine.PLAYING
+
+    def test_initial_state_is_name_entry(self):
+        """Engine starts in NAME_ENTRY state."""
         engine = self._make_engine()
-        assert engine.state == MarioGameEngine.MENU
+        assert engine.state == MarioGameEngine.NAME_ENTRY
+        assert engine.state_name == "NAME_ENTRY"
+        assert engine.player_name == ""
         assert engine.passed_count == 0
         assert engine.level == 1
 
@@ -573,11 +587,33 @@ class TestMarioFaceGameEngine:
         engine = self._make_engine()
         assert isinstance(engine._player, MarioFaceCharacter)
 
-    def test_start_transitions_to_playing(self):
-        """handle_key(SPACE) from MENU starts the game."""
+    def test_enter_with_name_starts_game(self):
+        """Typing a name and pressing ENTER starts the game."""
+        engine = self._make_engine()
+        self._start(engine, "Ana")
+        assert engine.player_name == "Ana"
+
+    def test_enter_with_empty_name_does_not_start(self):
+        """ENTER with an empty name keeps the NAME_ENTRY state."""
+        engine = self._make_engine()
+        engine.handle_key(13)
+        assert engine.state == MarioGameEngine.NAME_ENTRY
+
+    def test_name_typing_appends_and_backspace_removes(self):
+        """Typing appends characters; BACKSPACE removes the last one."""
+        engine = self._make_engine()
+        for ch in "Ana":
+            engine.handle_key(ord(ch))
+        assert engine.player_name == "Ana"
+        engine.handle_key(8)  # BACKSPACE
+        assert engine.player_name == "An"
+
+    def test_space_in_name_entry_types_space_not_start(self):
+        """SPACE in NAME_ENTRY types a space and does not start the game."""
         engine = self._make_engine()
         engine.handle_key(ord(" "))
-        assert engine.state == MarioGameEngine.PLAYING
+        assert engine.state == MarioGameEngine.NAME_ENTRY
+        assert engine.player_name == " "
 
     def test_detect_face_stores_crop_when_face_found(self):
         """detect_face stores the cropped face when FaceLandmarker finds a face."""
@@ -624,12 +660,13 @@ class TestMarioFaceGameEngine:
         assert engine._face_mask is None
 
     def test_jump_detected_during_play(self):
-        """A jump gesture triggers the character to jump during PLAYING."""
+        """A whole-body rise triggers the character to jump during PLAYING."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
 
         standing = make_standing_landmarks()
-        engine.update(standing, MOCK_CONNECTIONS)
+        for _ in range(JUMP_RISE_WINDOW):
+            engine.update(standing, MOCK_CONNECTIONS)
         assert engine._player.on_ground is True
 
         jumping = make_jumping_landmarks(jump_height=80)
@@ -639,7 +676,7 @@ class TestMarioFaceGameEngine:
     def test_no_false_jump_when_standing(self):
         """Standing still does not trigger a jump."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
 
         standing = make_standing_landmarks()
         engine.update(standing, MOCK_CONNECTIONS)
@@ -649,7 +686,7 @@ class TestMarioFaceGameEngine:
     def test_collision_loses_life(self):
         """Character colliding with an obstacle loses a life."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
 
         standing = make_standing_landmarks()
         engine.update(standing, MOCK_CONNECTIONS)
@@ -669,7 +706,7 @@ class TestMarioFaceGameEngine:
     def test_game_over_when_lives_depleted(self):
         """Game over when all lives are lost."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
 
         standing = make_standing_landmarks()
         engine.update(standing, MOCK_CONNECTIONS)
@@ -690,7 +727,7 @@ class TestMarioFaceGameEngine:
     def test_background_is_sky_color(self):
         """Rendered playing background is light sky-blue (celeste)."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
         frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
         engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
         engine.render(frame, MOCK_CONNECTIONS)
@@ -701,7 +738,7 @@ class TestMarioFaceGameEngine:
         """After update in PLAYING, the HUD region is visible."""
         engine = self._make_engine()
         frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
-        engine.handle_key(ord(" "))
+        self._start(engine)
         engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
         engine.render(frame, MOCK_CONNECTIONS)
 
@@ -718,7 +755,7 @@ class TestMarioFaceGameEngine:
         """render() in PLAYING state renders without errors."""
         engine = self._make_engine()
         frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
-        engine.handle_key(ord(" "))
+        self._start(engine)
         engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
         engine.render(frame, MOCK_CONNECTIONS)
 
@@ -726,29 +763,30 @@ class TestMarioFaceGameEngine:
         """render() in GAME_OVER state renders without errors."""
         engine = self._make_engine()
         frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
-        engine.handle_key(ord(" "))
+        self._start(engine)
         engine._state = MarioGameEngine.GAME_OVER
         engine.render(frame, MOCK_CONNECTIONS)
 
-    def test_reset_from_game_over_to_playing(self):
-        """handle_key(SPACE) from GAME_OVER restarts the game."""
+    def test_enter_from_game_over_returns_to_name_entry(self):
+        """handle_key(ENTER) from GAME_OVER returns to NAME_ENTRY, not PLAYING."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine, "Ana")
         engine._state = MarioGameEngine.GAME_OVER
-        engine.handle_key(ord(" "))
-        assert engine.state == MarioGameEngine.PLAYING
+        engine.handle_key(13)
+        assert engine.state == MarioGameEngine.NAME_ENTRY
+        assert engine.player_name == ""
         assert engine.level == 1
 
     def test_handle_key_q_does_not_start(self):
-        """Pressing 'q' from MENU does not start the game."""
+        """Pressing 'q' from NAME_ENTRY does not start the game."""
         engine = self._make_engine()
         engine.handle_key(ord("q"))
-        assert engine.state == MarioGameEngine.MENU
+        assert engine.state == MarioGameEngine.NAME_ENTRY
 
     def test_level_progression(self):
         """Level increments every 5 obstacles passed."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
 
         engine._obstacle_manager._passed_count = 5
         assert engine.level == 2
@@ -759,7 +797,7 @@ class TestMarioFaceGameEngine:
     def test_speed_progression(self):
         """Speed uses the additive multiplier BASE_SPEED * (1 + 0.1*(level-1))."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
 
         engine._obstacle_manager._passed_count = 0
         assert engine.speed == pytest.approx(BASE_SPEED)
@@ -779,7 +817,7 @@ class TestMarioFaceGameEngine:
     def test_sky_block_spawns_one_per_level_up(self):
         """Reaching level 2 (5 obstacles) spawns exactly one sky block."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
 
         assert len(engine._sky_blocks) == 0
 
@@ -792,15 +830,17 @@ class TestMarioFaceGameEngine:
         engine._update_sky_blocks(engine.speed)
         assert len(engine._sky_blocks) == 1
 
-    def test_collecting_sky_block_grants_coin_not_life(self):
-        """Collecting a sky block adds +1 coin and never a life."""
+    def test_collecting_sky_block_restores_life(self):
+        """Collecting a sky block adds +1 life (heart) and never a coin."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
         engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)
 
         engine._obstacle_manager._passed_count = 5
         engine._update_sky_blocks(engine.speed)
         assert len(engine._sky_blocks) == 1
+
+        engine._lives = 1  # leave room to gain a life
 
         block = engine._sky_blocks[0]
         bbox = engine._player.bounding_box
@@ -811,8 +851,8 @@ class TestMarioFaceGameEngine:
         coins_before = engine.coins
         engine._update_sky_blocks(engine.speed)
 
-        assert engine.coins == coins_before + 1
-        assert engine.lives == lives_before
+        assert engine.lives == lives_before + 1
+        assert engine.coins == coins_before
         assert block.collected is True
 
     def test_cloud_render_uses_sprite(self):
@@ -833,18 +873,19 @@ class TestMarioFaceGameEngine:
         assert np.array_equal(without, reference)
 
     def test_double_jump_detected_during_play(self):
-        """A second jump gesture while airborne triggers a double jump."""
+        """A second whole-body rise while airborne triggers a double jump."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
 
         standing = make_standing_landmarks()
-        engine.update(standing, MOCK_CONNECTIONS)
-
         jumping = make_jumping_landmarks(jump_height=80)
+
+        for _ in range(JUMP_RISE_WINDOW):
+            engine.update(standing, MOCK_CONNECTIONS)
         engine.update(jumping, MOCK_CONNECTIONS)
         assert engine._player._jump_count == 1
 
-        for _ in range(JUMP_COOLDOWN + 2):
+        for _ in range(JUMP_COOLDOWN + JUMP_RISE_WINDOW):
             engine.update(standing, MOCK_CONNECTIONS)
 
         engine.update(jumping, MOCK_CONNECTIONS)
@@ -872,7 +913,7 @@ class TestMarioFaceGameEngine:
         engine = MarioFaceGameEngine(
             WIDTH, HEIGHT, MagicMock(), mock_detector, mock_cropper,
         )
-        engine.handle_key(ord(" "))
+        self._start(engine)
 
         bgr_frame = np.full((HEIGHT, WIDTH, 3), (50, 100, 150), dtype=np.uint8)
         rgb_frame = np.full((HEIGHT, WIDTH, 3), (50, 100, 150), dtype=np.uint8)
@@ -911,7 +952,7 @@ class TestMarioFaceGameEngine:
     def test_spawned_clouds_are_wider_than_tall(self):
         """Spawned clouds keep a wide cloud-like proportion (height < width)."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
         engine._spawn_cloud(engine.speed)
         engine._spawn_cloud(engine.speed)
 
@@ -923,7 +964,7 @@ class TestMarioFaceGameEngine:
     def test_seeded_clouds_are_wider_than_tall(self):
         """Clouds seeded on reset keep a wide proportion."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
 
         assert len(engine._clouds) > 0
         for cloud in engine._clouds:
@@ -932,7 +973,7 @@ class TestMarioFaceGameEngine:
     def test_face_preview_drawn_with_face(self):
         """Playing render with a face draws the preview in the lower-right corner."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
 
         face_img = np.full((50, 50, 3), (0, 0, 255), dtype=np.uint8)
         mask = np.zeros((50, 50), dtype=np.uint8)
@@ -951,7 +992,7 @@ class TestMarioFaceGameEngine:
     def test_face_preview_outline_when_no_face(self):
         """Playing render without a face draws only the preview circle outline."""
         engine = self._make_engine()
-        engine.handle_key(ord(" "))
+        self._start(engine)
 
         frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
         engine.update(make_standing_landmarks(), MOCK_CONNECTIONS)

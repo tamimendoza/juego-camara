@@ -23,6 +23,7 @@ from src.games.mario.mario_game import (
     HUD_COLOR,
     INVINCIBILITY_THRESHOLD,
     JUMP_COOLDOWN,
+    JUMP_RISE_WINDOW,
     JUMP_THRESHOLD,
     JumpDetector,
     LEFT_SHOULDER,
@@ -114,8 +115,11 @@ def make_standing_landmarks():
 
 
 def make_jumping_landmarks(jump_height=80):
-    """Shoulders raised above baseline by jump_height."""
-    return make_landmarks(shoulder_y=240 - jump_height)
+    """Whole body raised: shoulders AND ankles rise by jump_height."""
+    return make_landmarks(
+        shoulder_y=240 - jump_height,
+        ankle_y=380 - jump_height,
+    )
 
 
 # --- MarioCharacter Tests ----------------------------------------------------
@@ -707,12 +711,13 @@ class TestMarioGameEngine:
         assert engine.state == MarioGameEngine.GAME_OVER
 
     def test_jump_detected_during_play(self):
-        """A jump gesture triggers the character to jump during PLAYING."""
+        """A whole-body rise triggers the character to jump during PLAYING."""
         engine = self._make_engine()
         engine.start()
 
         standing = make_standing_landmarks()
-        engine.update(standing, MOCK_CONNECTIONS)
+        for _ in range(JUMP_RISE_WINDOW):
+            engine.update(standing, MOCK_CONNECTIONS)
         assert engine._player.on_ground is True
 
         jumping = make_jumping_landmarks(jump_height=80)
@@ -866,25 +871,25 @@ class TestMarioGameEngine:
         assert mock_sound.play_game_over.called
 
     def test_double_jump_detected_during_play(self):
-        """A second jump gesture while airborne triggers a double jump."""
+        """A second whole-body rise while airborne triggers a double jump."""
         engine = self._make_engine()
         engine.start()
 
         standing = make_standing_landmarks()
-        engine.update(standing, MOCK_CONNECTIONS)
-        assert engine._player.on_ground is True
+        jumping = make_jumping_landmarks(jump_height=80)
 
         # First jump
-        jumping = make_jumping_landmarks(jump_height=80)
+        for _ in range(JUMP_RISE_WINDOW):
+            engine.update(standing, MOCK_CONNECTIONS)
         engine.update(jumping, MOCK_CONNECTIONS)
         assert engine._player.on_ground is False
         assert engine._player._jump_count == 1
 
-        # Wait for cooldown
-        for _ in range(JUMP_COOLDOWN + 2):
+        # Wait for cooldown and refill the rise window
+        for _ in range(JUMP_COOLDOWN + JUMP_RISE_WINDOW):
             engine.update(standing, MOCK_CONNECTIONS)
 
-        # Second jump (double jump) while airborne
+        # Jump again while airborne — double jump
         engine.update(jumping, MOCK_CONNECTIONS)
         assert engine._player._jump_count == 2
 
