@@ -4,9 +4,7 @@
 Defines the gameplay rules of the Mario Face Jump variant: level progression every
 5 obstacles, coin accumulation from obstacles passed, lives restored by sky squares,
 and an additive speed multiplier that increases by 0.1 per level.
-
 ## Requirements
-
 ### Requirement: Level up every 5 obstacles
 
 The system SHALL increment the player's level by 1 every 5 obstacles successfully
@@ -44,11 +42,12 @@ character, independent of sky squares.
 - **WHEN** the character passes obstacles during a game
 - **THEN** the coin counter accumulates 1 coin per obstacle passed
 
-### Requirement: Additive speed multiplier
+### Requirement: Multiplicative speed multiplier
 
-The system SHALL increase the game speed by 0.1 per level, applied additively to a
-speed multiplier. Speed is computed as `BASE_SPEED * (1 + 0.1 * (level - 1))`. At
-level 1 the multiplier is 1.0, at level 2 it is 1.1, at level 3 it is 1.2, and so on.
+The system SHALL increase the game speed by a factor of 2.0 per level, applied
+multiplicatively. Speed is computed as `BASE_SPEED * SPEED_MULTIPLIER^(level - 1)`
+with `SPEED_MULTIPLIER = 2.0`. At level 1 the multiplier is 1.0, at level 2 it is
+2.0, at level 3 it is 4.0, and so on — the game becomes twice as fast per level.
 
 #### Scenario: Speed multiplier at level 1
 
@@ -59,14 +58,14 @@ level 1 the multiplier is 1.0, at level 2 it is 1.1, at level 3 it is 1.2, and s
 #### Scenario: Speed multiplier at level 2
 
 - **WHEN** the player reaches level 2 (5 obstacles passed)
-- **THEN** the speed multiplier is 1.1
+- **THEN** the speed multiplier is 2.0
 - **AND** existing obstacles adopt the new speed immediately
 - **AND** new obstacles spawn at the new speed
 
 #### Scenario: Speed multiplier at level 3
 
 - **WHEN** the player reaches level 3 (10 obstacles passed)
-- **THEN** the speed multiplier is 1.2
+- **THEN** the speed multiplier is 4.0
 
 ### Requirement: Everything advances with speed
 
@@ -90,3 +89,4 @@ gameplay.
 - **WHEN** the game is in PLAYING state
 - **THEN** the frame background is filled with light sky-blue (celeste)
 - **AND** clouds, sky squares, obstacles, and the character are drawn on top of it
+

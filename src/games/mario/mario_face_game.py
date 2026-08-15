@@ -46,7 +46,7 @@ from .mario_game import (
 )
 
 # --- Face Jump speed rules ---
-SPEED_INCREMENT = 0.1  # additive speed multiplier increase per level
+SPEED_MULTIPLIER = 2.0  # game speed doubles per level (matching the base game)
 
 # --- Graffiti placement ---
 GRAFFITI_BRICK_Y_OFFSET = 15  # pixels below ground_y for the graffiti baseline
@@ -203,8 +203,8 @@ class MarioFaceGameEngine(MarioGameEngine):
 
     @property
     def speed(self) -> float:
-        """Additive speed multiplier: ``BASE_SPEED * (1 + 0.1 * (level - 1))``."""
-        return BASE_SPEED * (1 + SPEED_INCREMENT * (self._obstacle_manager.level - 1))
+        """Multiplicative speed multiplier: ``BASE_SPEED * 2.0^(level - 1)``."""
+        return BASE_SPEED * SPEED_MULTIPLIER ** (self._obstacle_manager.level - 1)
 
     def handle_key(self, key: int) -> None:
         """Handle keyboard input for the Face variant.
@@ -470,8 +470,8 @@ class MarioFaceGameEngine(MarioGameEngine):
             self._clouds.append(cloud)
 
     def _draw_hud(self, frame: np.ndarray) -> None:
-        """Draw coins, level, additive speed multiplier, player name, and hearts."""
-        speed_mult = 1 + SPEED_INCREMENT * (self._obstacle_manager.level - 1)
+        """Draw coins, level, multiplicative speed multiplier, player name, and hearts."""
+        speed_mult = SPEED_MULTIPLIER ** (self._obstacle_manager.level - 1)
         self._draw_hearts(frame)
         cv2.putText(
             frame, f"Jugador: {self._player_name}",
@@ -495,11 +495,11 @@ class MarioFaceGameEngine(MarioGameEngine):
         )
 
     def _render_game_over(self, frame: np.ndarray, connections: list) -> None:
-        """Render game over screen with additive speed and total coins."""
+        """Render game over screen with multiplicative speed and total coins."""
         self._render_game(frame, connections)
         frame[:] = (frame * 0.4).astype(frame.dtype)
 
-        speed_mult = 1 + SPEED_INCREMENT * (self._obstacle_manager.level - 1)
+        speed_mult = SPEED_MULTIPLIER ** (self._obstacle_manager.level - 1)
 
         cv2.putText(
             frame, "GAME OVER",

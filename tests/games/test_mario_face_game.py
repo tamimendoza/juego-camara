@@ -15,7 +15,7 @@ from src.games.mario.mario_face_game import (
     MarioFaceGameEngine,
     RESOLUTION,
     WINDOW_NAME,
-    SPEED_INCREMENT,
+    SPEED_MULTIPLIER,
     GRAFFITI_BRICK_Y_OFFSET,
 )
 from src.games.mario.mario_game import (
@@ -795,7 +795,7 @@ class TestMarioFaceGameEngine:
         assert engine.level == 3
 
     def test_speed_progression(self):
-        """Speed uses the additive multiplier BASE_SPEED * (1 + 0.1*(level-1))."""
+        """Speed uses the multiplicative multiplier BASE_SPEED * 2.0^(level-1)."""
         engine = self._make_engine()
         self._start(engine)
 
@@ -803,10 +803,10 @@ class TestMarioFaceGameEngine:
         assert engine.speed == pytest.approx(BASE_SPEED)
 
         engine._obstacle_manager._passed_count = 5
-        assert engine.speed == pytest.approx(BASE_SPEED * (1 + SPEED_INCREMENT))
+        assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER)
 
         engine._obstacle_manager._passed_count = 10
-        assert engine.speed == pytest.approx(BASE_SPEED * (1 + 2 * SPEED_INCREMENT))
+        assert engine.speed == pytest.approx(BASE_SPEED * SPEED_MULTIPLIER ** 2)
 
     def test_spawn_gap_at_level_1_is_wide(self):
         """Level 1 spawn gap range is wide (180-280 frames)."""
@@ -948,6 +948,46 @@ class TestMarioFaceGameEngine:
         region = frame[GROUND_Y:HEIGHT, WIDTH // 2 - 110:WIDTH // 2 + 110]
         bright = (region >= 250).all(axis=2)
         assert bright.sum() == 0
+
+    def test_static_bushes_rest_on_ground_at_720p(self):
+        """Static bushes are drawn on the ground line at the 1280x720 Face resolution."""
+        engine = MarioFaceGameEngine(
+            1280, 720, MagicMock(),
+            MagicMock(spec=FaceLandmarkerDetector),
+            MagicMock(spec=FaceCropper),
+        )
+        ground_y = engine._ground_y
+        frame = np.full((720, 1280, 3), SKY_COLOR, dtype=np.uint8)
+        engine._render_static_environment(frame, draw_clouds=False)
+
+        # A bush ellipse center sits near the ground line (ground_y - 8, radius ~12),
+        # so its body must be visible straddling the ground, never floating in the sky.
+        from src.games.mario.mario_game import _bush_positions
+        for bx, by in _bush_positions(1280, ground_y):
+            assert abs(by - (ground_y - 8)) <= 1
+            # Some green bush pixels at the bush's body just above the ground
+            region = frame[by - 10:by + 12, bx - 26:bx + 26]
+            green = (
+                (region[:, :, 1] > region[:, :, 0])
+                & (region[:, :, 1] > region[:, :, 2])
+            )
+            assert green.sum() > 0, f"no bush pixels at {bx}, {by}"
+
+    def test_static_bushes_not_floating_in_sky_at_720p(self):
+        """No static bush pixels appear far above the ground at the Face resolution."""
+        engine = MarioFaceGameEngine(
+            1280, 720, MagicMock(),
+            MagicMock(spec=FaceLandmarkerDetector),
+            MagicMock(spec=FaceCropper),
+        )
+        ground_y = engine._ground_y
+        frame = np.full((720, 1280, 3), SKY_COLOR, dtype=np.uint8)
+        engine._render_static_environment(frame, draw_clouds=False)
+
+        # The sky region (well above the ground) must contain no green bush pixels
+        sky = frame[:ground_y - 60, :]
+        green = (sky[:, :, 1] > sky[:, :, 0]) & (sky[:, :, 1] > sky[:, :, 2])
+        assert not green.any()
 
     def test_spawned_clouds_are_wider_than_tall(self):
         """Spawned clouds keep a wide cloud-like proportion (height < width)."""

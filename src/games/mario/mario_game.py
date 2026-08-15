@@ -143,13 +143,27 @@ LEVEL_UP_COLOR = (0, 255, 255)   # yellow level-up text
 GRAFFITI_TEXT = "Familia Mendoza Silva"
 GRAFFITI_COLOR = (255, 255, 255)  # white graffiti
 
-# --- Static environment element positions ---
-_CLOUD_OFFSETS = [
-    (80, 80), (200, 70), (340, 90), (480, 60), (560, 85),
-]
-_BUSH_OFFSETS = [
-    (50, 400), (150, 410), (280, 405), (420, 395), (520, 400),
-]
+# --- Static environment element positions (resolution-relative) ---
+def _cloud_positions(width: int, ground_y: int) -> list:
+    """Static cloud centers distributed across the sky, proportional to size."""
+    return [
+        (int(width * 0.125), int(ground_y * 0.19)),
+        (int(width * 0.3125), int(ground_y * 0.17)),
+        (int(width * 0.53), int(ground_y * 0.21)),
+        (int(width * 0.75), int(ground_y * 0.15)),
+        (int(width * 0.875), int(ground_y * 0.20)),
+    ]
+
+
+def _bush_positions(width: int, ground_y: int) -> list:
+    """Static bush centers resting on the ground line, proportional to width."""
+    return [
+        (int(width * 0.08), ground_y - 8),
+        (int(width * 0.23), ground_y - 8),
+        (int(width * 0.44), ground_y - 8),
+        (int(width * 0.66), ground_y - 8),
+        (int(width * 0.81), ground_y - 8),
+    ]
 
 
 class MarioCharacter:
@@ -925,13 +939,13 @@ class MarioGameEngine:
         """
         # Static clouds (only for menu / game-over backgrounds)
         if draw_clouds:
-            for cx, cy in _CLOUD_OFFSETS:
+            for cx, cy in _cloud_positions(self.width, self._ground_y):
                 cv2.ellipse(frame, (cx, cy), (30, 15), 0, 0, 360, CLOUD_COLOR, -1)
                 cv2.ellipse(frame, (cx - 25, cy + 5), (20, 12), 0, 0, 360, CLOUD_COLOR, -1)
                 cv2.ellipse(frame, (cx + 25, cy + 5), (20, 12), 0, 0, 360, CLOUD_COLOR, -1)
 
         # Bushes
-        for bx, by in _BUSH_OFFSETS:
+        for bx, by in _bush_positions(self.width, self._ground_y):
             cv2.ellipse(frame, (bx, by), (25, 12), 0, 0, 360, BUSH_COLOR, -1)
             cv2.ellipse(frame, (bx - 18, by + 4), (15, 9), 0, 0, 360, BUSH_COLOR, -1)
             cv2.ellipse(frame, (bx + 18, by + 4), (15, 9), 0, 0, 360, BUSH_COLOR, -1)
